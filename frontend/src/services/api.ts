@@ -5,6 +5,7 @@ export interface ResearchRequest {
   username: string;
   topic: string;
   search_api?: string;
+  history?: Array<{ role: string; content: string }>;
 }
 
 export interface ResearchStreamEvent {

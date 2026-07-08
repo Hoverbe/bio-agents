@@ -482,8 +482,14 @@ async function handleSend() {
   scrollToBottom();
 
   try {
+    // 构建对话历史
+    const history = currentChat.value.messages.map((msg: Message) => ({
+      role: msg.isUser ? 'user' : 'assistant',
+      content: msg.content
+    }));
+    
     await runResearchStream(
-      { username: username.value, topic: userMessage.content },
+      { username: username.value, topic: userMessage.content, history },
       (event) => {
         handleStreamEvent(event);
       }
@@ -556,6 +562,43 @@ function handleStreamEvent(event: any) {
       if (currentChat.value) {
         currentChat.value.messages.push(botMessage);
         currentChat.value.lastMessage = botMessage.content.slice(0, 30) + (botMessage.content.length > 30 ? "..." : "");
+        nextTick(() => scrollToBottom());
+      }
+      break;
+      
+    case "message_chunk":
+      // 流式消息处理
+      if (currentChat.value) {
+        const agent = event.agent || '';
+        const agentName = event.agent_name || '';
+        
+        // 查找当前Agent的消息（最后一条不是用户消息且agent匹配的消息）
+        let currentMessage = currentChat.value.messages.filter(m => !m.isUser).pop();
+        
+        if (!currentMessage || 
+            currentMessage.agent !== agent || 
+            (currentMessage as any).isComplete) {
+          // 创建新消息
+          const newMessage: Message = {
+            content: event.content || "",
+            isUser: false,
+            timestamp: getTimeString(),
+            agent: agent || undefined,
+            agentName: agentName || undefined
+          } as any;
+          (newMessage as any).isComplete = false;
+          currentChat.value.messages.push(newMessage);
+        } else {
+          // 更新现有消息
+          currentMessage.content += event.content || "";
+        }
+        
+        // 标记完成
+        if (event.complete) {
+          (currentChat.value.messages.filter(m => !m.isUser).pop() as any).isComplete = true;
+        }
+        
+        currentChat.value.lastMessage = currentChat.value.messages[currentChat.value.messages.length - 1].content.slice(0, 30) + "...";
         nextTick(() => scrollToBottom());
       }
       break;
