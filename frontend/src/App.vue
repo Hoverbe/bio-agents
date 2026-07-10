@@ -252,7 +252,7 @@
 
 <script lang="ts" setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount } from "vue";
-import { getVoiceWsUrl, isVoiceWsSecure, runResearchStream } from "./services/api";
+import { getConversationHistory, getVoiceWsUrl, isVoiceWsSecure, runResearchStream, type ConversationRecord } from "./services/api";
 import AdminPanel from "./components/AdminPanel.vue";
 
 interface Message {
@@ -404,9 +404,7 @@ async function handleLogin() {
   error.value = "";
 
   try {
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    loadChatHistory();
+    await loadChatHistory();
     
     isLoggedIn.value = true;
     
@@ -1023,9 +1021,61 @@ function saveChatHistory() {
   localStorage.setItem(`bioagent_${username.value}`, JSON.stringify(data));
 }
 
+function formatRecordDate(value?: string | null): string {
+  if (!value) return getDateString();
+  return new Date(value).toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+}
+
+function historyToMessages(history: Array<{ role: string; content: string }>, createdAt?: string | null): Message[] {
+  const timestamp = createdAt
+    ? new Date(createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+    : getTimeString();
+  return history
+    .filter((item) => item.content)
+    .map((item) => ({
+      content: item.content,
+      isUser: item.role === "user",
+      timestamp
+    }));
+}
+
+function recordToChat(record: ConversationRecord): Chat {
+  const messages = Array.isArray(record.history_json) && record.history_json.length > 0
+    ? historyToMessages(record.history_json, record.created_at)
+    : [
+        { content: record.request_text, isUser: true, timestamp: getTimeString() },
+        ...(record.response_text ? [{ content: record.response_text, isUser: false, timestamp: getTimeString() }] : [])
+      ];
+  const lastMessage = messages[messages.length - 1]?.content || "";
+  return {
+    title: record.request_text.slice(0, 20) + (record.request_text.length > 20 ? "..." : ""),
+    messages,
+    lastMessage: lastMessage.slice(0, 30) + (lastMessage.length > 30 ? "..." : ""),
+    timestamp: formatRecordDate(record.created_at)
+  };
+}
+
+function mergeConversationRecords(records: ConversationRecord[]): Chat[] {
+  const latestFullHistory = [...records]
+    .reverse()
+    .find((record) => Array.isArray(record.history_json) && record.history_json.length > 0);
+  if (latestFullHistory) {
+    return [recordToChat(latestFullHistory)];
+  }
+  return records.map(recordToChat).reverse();
+}
+
 // 加载聊天历史
-function loadChatHistory() {
+async function loadChatHistory() {
   if (!username.value) return;
+
+  const remoteHistory = await getConversationHistory(username.value.trim());
+  if (remoteHistory.conversations.length > 0) {
+    chatHistory.value = mergeConversationRecords(remoteHistory.conversations);
+    currentChatIndex.value = 0;
+    saveChatHistory();
+    return;
+  }
   
   const stored = localStorage.getItem(`bioagent_${username.value}`);
   if (stored) {

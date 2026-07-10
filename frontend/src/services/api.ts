@@ -27,6 +27,21 @@ export interface ResearchStreamEvent {
   [key: string]: unknown;
 }
 
+export interface ConversationRecord {
+  id: number;
+  conversation_type: string;
+  request_text: string;
+  response_text?: string | null;
+  history_json?: Array<{ role: string; content: string }> | null;
+  status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ConversationHistoryResponse {
+  conversations: ConversationRecord[];
+}
+
 export interface StreamOptions {
   signal?: AbortSignal;
 }
@@ -129,6 +144,10 @@ export function stopRAGDocument(source: string, namespace = "default"): Promise<
 
 export function deleteRAGDocument(source: string, namespace = "default"): Promise<any> {
   return requestJSON(`/admin/rag/documents?source=${encodeURIComponent(source)}&namespace=${encodeURIComponent(namespace)}`, { method: "DELETE" });
+}
+
+export function getConversationHistory(username: string): Promise<ConversationHistoryResponse> {
+  return requestJSON(`/conversations/${encodeURIComponent(username)}`);
 }
 
 // 发送聊天消息

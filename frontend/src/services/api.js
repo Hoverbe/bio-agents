@@ -97,6 +97,9 @@ export function stopRAGDocument(source, namespace = "default") {
 export function deleteRAGDocument(source, namespace = "default") {
     return requestJSON(`/admin/rag/documents?source=${encodeURIComponent(source)}&namespace=${encodeURIComponent(namespace)}`, { method: "DELETE" });
 }
+export function getConversationHistory(username) {
+    return requestJSON(`/conversations/${encodeURIComponent(username)}`);
+}
 // 发送聊天消息
 export async function sendMessage(username, message) {
     const response = await fetch(`${baseURL}/chat`, {
