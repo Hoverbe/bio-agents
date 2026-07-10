@@ -1,5 +1,18 @@
 const baseURL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:7777";
+
+export function getVoiceWsUrl(sessionId: string): string {
+  const url = new URL(baseURL);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `/voice/ws/${encodeURIComponent(sessionId)}`;
+  url.search = "";
+  return url.toString();
+}
+
+export function isVoiceWsSecure(): boolean {
+  const url = new URL(baseURL);
+  return url.protocol === "https:" || url.hostname === "localhost" || url.hostname === "127.0.0.1";
+}
 
 export interface ResearchRequest {
   username: string;
@@ -15,6 +28,106 @@ export interface ResearchStreamEvent {
 
 export interface StreamOptions {
   signal?: AbortSignal;
+}
+
+async function requestJSON<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${baseURL}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(errorText || `请求失败，状态码：${response.status}`);
+  }
+  return response.json();
+}
+
+export function getAdminConfig(): Promise<any> {
+  return requestJSON("/admin/config");
+}
+
+export function saveMCPConfig(payload: any): Promise<any> {
+  return requestJSON("/admin/mcp", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function deleteMCPConfig(name: string): Promise<any> {
+  return requestJSON(`/admin/mcp/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export function saveToolConfig(payload: any): Promise<any> {
+  return requestJSON("/admin/tools", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function deleteToolConfig(name: string): Promise<any> {
+  return requestJSON(`/admin/tools/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export function saveSkillConfig(payload: any): Promise<any> {
+  return requestJSON("/admin/skills", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function deleteSkillConfig(name: string): Promise<any> {
+  return requestJSON(`/admin/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export function saveRAGConfig(payload: any): Promise<any> {
+  return requestJSON("/admin/rag", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function getRAGDocuments(namespace = "default"): Promise<any> {
+  return requestJSON(`/admin/rag/documents?namespace=${encodeURIComponent(namespace)}`);
+}
+
+export function uploadRAGDocument(formData: FormData): Promise<any> {
+  return fetch(`${baseURL}/admin/rag/upload`, {
+    method: "POST",
+    body: formData
+  }).then(async (response) => {
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(errorText || `请求失败，状态码：${response.status}`);
+    }
+    return response.json();
+  });
+}
+
+export function startRAGDocument(source: string, namespace = "default"): Promise<any> {
+  const formData = new FormData();
+  formData.append("source", source);
+  formData.append("namespace", namespace);
+  return fetch(`${baseURL}/admin/rag/documents/start`, {
+    method: "POST",
+    body: formData
+  }).then(async (response) => {
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(errorText || `请求失败，状态码：${response.status}`);
+    }
+    return response.json();
+  });
+}
+
+export function stopRAGDocument(source: string, namespace = "default"): Promise<any> {
+  const formData = new FormData();
+  formData.append("source", source);
+  formData.append("namespace", namespace);
+  return fetch(`${baseURL}/admin/rag/documents/stop`, {
+    method: "POST",
+    body: formData
+  }).then(async (response) => {
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(errorText || `请求失败，状态码：${response.status}`);
+    }
+    return response.json();
+  });
+}
+
+export function deleteRAGDocument(source: string, namespace = "default"): Promise<any> {
+  return requestJSON(`/admin/rag/documents?source=${encodeURIComponent(source)}&namespace=${encodeURIComponent(namespace)}`, { method: "DELETE" });
 }
 
 // 发送聊天消息
