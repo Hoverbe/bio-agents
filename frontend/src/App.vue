@@ -63,7 +63,7 @@
       </section>
     </div>
 
-    <!-- 登录后：聊天界面 -->
+    <!-- 登录后：主界面 -->
     <div v-else class="layout layout-fullscreen">
       <!-- 左侧：聊天列表和用户信息 -->
       <aside class="sidebar">
@@ -125,6 +125,9 @@
         </div>
       </aside>
 
+      <AdminPanel v-if="currentView === 'admin'" />
+
+      <template v-else>
       <!-- 中间：聊天内容 -->
       <section class="panel panel-chat">
         <header class="chat-header">
@@ -132,6 +135,10 @@
             <h2>{{ currentChatTitle }}</h2>
           </div>
           <div class="chat-controls">
+            <button class="voice-btn" :class="voiceState" @click="toggleVoiceCall">
+              <span class="voice-dot"></span>
+              {{ voiceEnabled ? voiceStatus : '语音通话' }}
+            </button>
             <button class="secondary-btn" @click="clearCurrentChat">
               清空对话
             </button>
@@ -188,7 +195,7 @@
               placeholder="输入您的问题..."
               rows="2"
               :disabled="loading"
-              @keydown.ctrl.enter="handleSend"
+              @keydown.enter.exact.prevent="handleSend"
             ></textarea>
           </div>
           <button class="send-btn" type="submit" :disabled="loading || !inputMessage.trim()">
@@ -238,13 +245,15 @@
           </div>
         </div>
       </aside>
+      </template>
     </div>
   </main>
 </template>
 
 <script lang="ts" setup>
-import { ref, computed, nextTick, watch } from "vue";
-import { sendMessage, runResearchStream } from "./services/api";
+import { ref, computed, nextTick, watch, onBeforeUnmount } from "vue";
+import { getVoiceWsUrl, isVoiceWsSecure, runResearchStream } from "./services/api";
+import AdminPanel from "./components/AdminPanel.vue";
 
 interface Message {
   content: string;
@@ -278,12 +287,49 @@ const loading = ref(false);
 const error = ref("");
 
 // 聊天状态
+const currentView = ref<"chat" | "admin">("chat");
 const chatHistory = ref<Chat[]>([]);
 const currentChatIndex = ref(-1);
 const inputMessage = ref("");
 
 // 任务清单
 const taskList = ref<TaskItem[]>([]);
+
+type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "interrupted";
+const voiceState = ref<VoiceState>("idle");
+const voiceEnabled = ref(false);
+const voiceStatus = computed(() => {
+  const map: Record<VoiceState, string> = {
+    idle: "语音通话",
+    listening: "正在聆听",
+    thinking: "正在理解",
+    speaking: "正在播报",
+    interrupted: "已打断"
+  };
+  return map[voiceState.value];
+});
+let voiceSocket: WebSocket | null = null;
+let mediaRecorder: MediaRecorder | null = null;
+let mediaStream: MediaStream | null = null;
+let audioContext: AudioContext | null = null;
+let analyser: AnalyserNode | null = null;
+let vadTimer = 0;
+let speechStartedAt = 0;
+let lastSpeechAt = 0;
+let recordingChunks: BlobPart[] = [];
+let currentBotVoiceMessage: Message | null = null;
+let currentAudio: HTMLAudioElement | null = null;
+const audioQueue: Array<{ text: string; audio: string; format: string }> = [];
+let playing = false;
+let currentPlayedText = "";
+let audioPlaybackUnlocked = false;
+let speechStartSent = false;
+let closingVoiceCall = false;
+let speechCandidateSince = 0;
+const vadThreshold = 0.005;
+const vadStartDelay = 80;
+const minRecordingMs = 350;
+const minAudioBytes = 900;
 
 // 消息容器引用
 const messagesContainer = ref<HTMLElement | null>(null);
@@ -391,6 +437,7 @@ function handleLogout() {
 
 // 开始新对话
 function startNewChat() {
+  currentView.value = "chat";
   const newChat: Chat = {
     title: "新对话",
     messages: [],
@@ -411,6 +458,7 @@ function startNewChat() {
 
 // 切换对话
 function switchChat(index: number) {
+  currentView.value = "chat";
   currentChatIndex.value = index;
   inputMessage.value = "";
   taskList.value = [];
@@ -453,6 +501,318 @@ function clearCurrentChat() {
     saveChatHistory();
   }
 }
+
+async function toggleVoiceCall() {
+  if (voiceEnabled.value) {
+    stopVoiceCall();
+    return;
+  }
+  if (!currentChat.value) return;
+
+  if (!isVoiceWsSecure() && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+    showVoiceError("手机浏览器要求 HTTPS 才能使用麦克风和语音通话。请用 HTTPS 地址访问。 ");
+    return;
+  }
+
+  if (window.isSecureContext === false && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+    showVoiceError("手机浏览器要求 HTTPS 才能使用麦克风。请用 HTTPS 地址访问，或在本机 localhost 测试。 ");
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showVoiceError("当前浏览器不支持麦克风，或页面不是 HTTPS。手机访问请使用 HTTPS 地址。 ");
+    return;
+  }
+
+  await unlockAudioPlayback();
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (error) {
+    showVoiceError(error instanceof Error && error.name === "NotAllowedError"
+      ? "麦克风权限被拒绝，请在浏览器设置中允许麦克风。"
+      : "无法打开麦克风。手机访问局域网 HTTP 地址时，浏览器通常会禁止语音通话，请改用 HTTPS。"
+    );
+    return;
+  }
+  audioContext = new AudioContext();
+  await audioContext.resume();
+  const source = audioContext.createMediaStreamSource(mediaStream);
+  analyser = audioContext.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+
+  const sessionId = `${username.value}-${Date.now()}`;
+  closingVoiceCall = false;
+  voiceSocket = new WebSocket(getVoiceWsUrl(sessionId));
+  voiceSocket.onmessage = (message) => handleVoiceEvent(JSON.parse(message.data));
+  voiceSocket.onerror = () => handleVoiceSocketClosed();
+  voiceSocket.onclose = () => handleVoiceSocketClosed();
+  voiceEnabled.value = true;
+  voiceState.value = "listening";
+  startVadLoop();
+}
+
+function showVoiceError(message: string) {
+  if (currentChat.value) {
+    currentChat.value.messages.push({ content: message, isUser: false, timestamp: getTimeString(), agent: "voice_agent", agentName: "语音Agent" });
+    nextTick(() => scrollToBottom());
+  }
+}
+
+async function unlockAudioPlayback() {
+  if (audioPlaybackUnlocked) return;
+  const silentAudio = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=");
+  silentAudio.muted = true;
+  try {
+    await silentAudio.play();
+    silentAudio.pause();
+    audioPlaybackUnlocked = true;
+  } catch {
+    audioPlaybackUnlocked = false;
+  }
+}
+
+function getAudioMime(format: string): string {
+  if (format === "mp3") return "audio/mpeg";
+  if (format === "wav") return "audio/wav";
+  if (format === "opus") return "audio/ogg; codecs=opus";
+  return `audio/${format}`;
+}
+
+function getAudioSource(audio: string, format: string): string {
+  if (audio.startsWith("data:audio/")) return audio;
+  return `data:${getAudioMime(format)};base64,${audio.replace(/\s/g, "")}`;
+}
+
+function stopVoiceCall(sendInterrupt = true) {
+  closingVoiceCall = true;
+  voiceEnabled.value = false;
+  voiceState.value = "idle";
+  window.clearInterval(vadTimer);
+  stopRecording(false);
+  stopPlayback(true);
+  mediaStream?.getTracks().forEach((track) => track.stop());
+  mediaStream = null;
+  audioContext?.close();
+  audioContext = null;
+  analyser = null;
+  if (sendInterrupt && voiceSocket?.readyState === WebSocket.OPEN) {
+    voiceSocket.send(JSON.stringify({ type: "interrupt" }));
+  }
+  voiceSocket?.close();
+  voiceSocket = null;
+  speechStartSent = false;
+}
+
+function handleVoiceSocketClosed() {
+  if (closingVoiceCall) return;
+  voiceState.value = "interrupted";
+  window.clearInterval(vadTimer);
+  stopRecording(false);
+  stopPlayback(true);
+  mediaStream?.getTracks().forEach((track) => track.stop());
+  mediaStream = null;
+  audioContext?.close();
+  audioContext = null;
+  analyser = null;
+  voiceSocket = null;
+  voiceEnabled.value = false;
+  speechStartSent = false;
+  if (currentChat.value) {
+    currentChat.value.messages.push({ content: "语音连接已断开，请重新点击语音通话。", isUser: false, timestamp: getTimeString() });
+  }
+}
+
+function startVadLoop() {
+  const data = new Uint8Array(analyser?.frequencyBinCount || 0);
+  vadTimer = window.setInterval(() => {
+    if (!voiceEnabled.value || !analyser) return;
+    analyser.getByteTimeDomainData(data);
+    const rms = Math.sqrt(data.reduce((sum, value) => {
+      const normalized = (value - 128) / 128;
+      return sum + normalized * normalized;
+    }, 0) / data.length);
+    const speaking = rms > vadThreshold;
+    const now = Date.now();
+
+    if (speaking) {
+      if (!speechCandidateSince) speechCandidateSince = now;
+      lastSpeechAt = now;
+    } else {
+      speechCandidateSince = 0;
+    }
+
+    const stableSpeaking = speaking && now - speechCandidateSince >= vadStartDelay;
+    if (stableSpeaking && (voiceState.value === "speaking" || voiceState.value === "thinking")) {
+      interruptVoiceTurn();
+    }
+    if (stableSpeaking) {
+      if (!speechStartSent) {
+        sendSpeechStart();
+        speechStartSent = true;
+      }
+      if (!mediaRecorder || mediaRecorder.state === "inactive") {
+        startRecording();
+        speechStartedAt = now;
+      }
+    }
+    if (mediaRecorder?.state === "recording" && now - lastSpeechAt > 950 && now - speechStartedAt > minRecordingMs) {
+      stopRecording(true);
+    }
+  }, 80);
+}
+
+function sendSpeechStart() {
+  if (voiceSocket?.readyState !== WebSocket.OPEN) return;
+  const history = currentMessages.value.map((msg) => ({ role: msg.isUser ? "user" : "assistant", content: msg.content }));
+  voiceSocket.send(JSON.stringify({ type: "speech_start", history }));
+}
+
+function getSupportedRecordingType(): string {
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function startRecording() {
+  if (!mediaStream) return;
+  recordingChunks = [];
+  const mimeType = getSupportedRecordingType();
+  mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data.size > 0) recordingChunks.push(event.data);
+  };
+  mediaRecorder.onstop = () => sendRecordedAudio();
+  mediaRecorder.start(120);
+  voiceState.value = "listening";
+}
+
+function stopRecording(send: boolean) {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+  if (!send) mediaRecorder.onstop = null;
+  mediaRecorder.stop();
+}
+
+async function sendRecordedAudio() {
+  if (!recordingChunks.length || voiceSocket?.readyState !== WebSocket.OPEN) return;
+  const blob = new Blob(recordingChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
+  if (blob.size < minAudioBytes) {
+    recordingChunks = [];
+    speechStartSent = false;
+    speechCandidateSince = 0;
+    return;
+  }
+  const audio = await blobToBase64(blob);
+  const history = currentMessages.value.map((msg) => ({ role: msg.isUser ? "user" : "assistant", content: msg.content }));
+  voiceSocket.send(JSON.stringify({ type: "audio", audio, filename: "utterance.webm", history }));
+  recordingChunks = [];
+  speechStartSent = false;
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+function interruptVoiceTurn() {
+  voiceState.value = "interrupted";
+  stopPlayback(true);
+  if (voiceSocket?.readyState === WebSocket.OPEN) {
+    voiceSocket.send(JSON.stringify({ type: "interrupt" }));
+  }
+}
+
+function stopPlayback(clearQueue: boolean) {
+  currentAudio?.pause();
+  currentAudio = null;
+  playing = false;
+  if (clearQueue) audioQueue.splice(0);
+}
+
+function handleVoiceEvent(event: any) {
+  if (event.type === "state") voiceState.value = event.state;
+  if (event.type === "interrupted") voiceState.value = "interrupted";
+  if (event.type === "asr_ignored") {
+    voiceState.value = voiceEnabled.value ? "listening" : "idle";
+    currentBotVoiceMessage = null;
+    return;
+  }
+  if (event.type === "intent_preview" && event.text) {
+    voiceState.value = "thinking";
+  }
+  if (event.type === "asr_final" && currentChat.value && event.text) {
+    currentChat.value.messages.push({ content: event.text, isUser: true, timestamp: getTimeString() });
+    currentChat.value.lastMessage = event.text.slice(0, 30);
+    currentBotVoiceMessage = null;
+  }
+  if (event.type === "llm_chunk" && currentChat.value) {
+    if (!currentBotVoiceMessage) {
+      currentBotVoiceMessage = { content: "", isUser: false, timestamp: getTimeString(), agent: "voice_agent", agentName: "语音Agent" };
+      currentChat.value.messages.push(currentBotVoiceMessage);
+    }
+    currentBotVoiceMessage.content += event.text || "";
+    currentChat.value.lastMessage = currentBotVoiceMessage.content.slice(0, 30);
+    nextTick(() => scrollToBottom());
+  }
+  if (event.type === "tts_chunk") {
+    if (!event.audio && currentChat.value) {
+      currentChat.value.messages.push({ content: "收到 TTS 事件，但音频数据为空。", isUser: false, timestamp: getTimeString() });
+      return;
+    }
+    audioQueue.push({ text: event.text, audio: event.audio, format: event.format || "mp3" });
+    playNextAudio();
+  }
+  if (event.type === "done") {
+    voiceState.value = voiceEnabled.value ? "listening" : "idle";
+    currentBotVoiceMessage = null;
+  }
+  if (event.type === "error" && currentChat.value) {
+    currentChat.value.messages.push({ content: event.detail || "语音服务出错", isUser: false, timestamp: getTimeString() });
+  }
+}
+
+function playNextAudio() {
+  if (playing || audioQueue.length === 0) return;
+  const item = audioQueue.shift()!;
+  if (!item.audio) {
+    playNextAudio();
+    return;
+  }
+  playing = true;
+  voiceState.value = "speaking";
+  currentPlayedText = item.text;
+  const audioUrl = getAudioSource(item.audio, item.format);
+  currentAudio = new Audio(audioUrl);
+  currentAudio.onended = () => {
+    if (voiceSocket?.readyState === WebSocket.OPEN) {
+      voiceSocket.send(JSON.stringify({ type: "played", text: currentPlayedText }));
+    }
+    playing = false;
+    currentAudio = null;
+    playNextAudio();
+    if (!playing && audioQueue.length === 0 && voiceEnabled.value) voiceState.value = "listening";
+  };
+  currentAudio.onerror = () => {
+    playing = false;
+    currentAudio = null;
+    if (currentChat.value) {
+      currentChat.value.messages.push({ content: "音频播放失败，请检查浏览器自动播放权限或音频格式。", isUser: false, timestamp: getTimeString() });
+    }
+    playNextAudio();
+  };
+  currentAudio.play().catch((error) => {
+    playing = false;
+    currentAudio = null;
+    if (currentChat.value) {
+      currentChat.value.messages.push({ content: `音频播放被浏览器阻止：${error instanceof Error ? error.message : '未知错误'}`, isUser: false, timestamp: getTimeString() });
+    }
+  });
+}
+
+onBeforeUnmount(() => stopVoiceCall(false));
 
 // 发送消息
 async function handleSend() {
@@ -975,6 +1335,57 @@ textarea {
   color: #0f172a;
 }
 
+.voice-btn {
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  background: rgba(59, 130, 246, 0.1);
+  color: #1d4ed8;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-btn.speaking {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.voice-btn.thinking {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+
+.voice-btn.interrupted {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.voice-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12);
+}
+
+.voice-btn.listening .voice-dot,
+.voice-btn.speaking .voice-dot,
+.voice-btn.thinking .voice-dot {
+  animation: voicePulse 1s infinite ease-in-out;
+}
+
+@keyframes voicePulse {
+  0%, 100% { transform: scale(0.85); opacity: 0.65; }
+  50% { transform: scale(1.25); opacity: 1; }
+}
+
 .error-chip {
   margin-top: 16px;
   display: inline-flex;
@@ -1087,6 +1498,26 @@ textarea {
 .new-chat-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 20px rgba(37, 99, 235, 0.25);
+}
+
+.admin-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 11px 16px;
+  border-radius: 14px;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin-btn.active,
+.admin-btn:hover {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.3);
+  color: #1d4ed8;
 }
 
 /* 聊天历史 */
@@ -1613,6 +2044,210 @@ textarea {
 @media (max-width: 1200px) {
   .task-panel {
     display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-shell,
+  .app-shell.expanded {
+    min-height: 100dvh;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .aurora {
+    display: none;
+  }
+
+  .layout-fullscreen {
+    height: 100dvh;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar {
+    width: 100%;
+    max-height: 148px;
+    padding: 10px 12px;
+    border-right: none;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+
+  .sidebar-header {
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+  }
+
+  .user-avatar,
+  .message-avatar {
+    width: 32px;
+    height: 32px;
+    font-size: 13px;
+  }
+
+  .user-info h3 {
+    font-size: 14px;
+  }
+
+  .user-status,
+  .chat-history h4,
+  .chat-last-message,
+  .delete-chat-btn {
+    display: none;
+  }
+
+  .sidebar-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .new-chat-btn,
+  .admin-btn {
+    margin: 0;
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+
+  .chat-history {
+    flex: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+  }
+
+  .chat-history ul {
+    flex-direction: row;
+    gap: 6px;
+  }
+
+  .chat-history li {
+    min-width: 112px;
+    max-width: 150px;
+    padding: 8px 10px;
+    flex-shrink: 0;
+  }
+
+  .chat-preview {
+    margin: 0;
+    gap: 8px;
+  }
+
+  .chat-title {
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-time {
+    display: none;
+  }
+
+  .panel-chat {
+    min-width: 0;
+    flex: 1;
+    height: calc(100dvh - 148px);
+  }
+
+  .chat-header {
+    padding: 10px 12px;
+    align-items: flex-start;
+    gap: 8px;
+    flex-direction: column;
+  }
+
+  .chat-title-bar h2 {
+    font-size: 15px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-controls {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+  }
+
+  .voice-btn,
+  .secondary-btn {
+    min-height: 40px;
+    padding: 9px 12px;
+    justify-content: center;
+    font-size: 13px;
+  }
+
+  .messages-container {
+    padding: 12px;
+    gap: 14px;
+  }
+
+  .message {
+    max-width: 94%;
+    gap: 8px;
+  }
+
+  .message-content {
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+
+  .message-content p {
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .message-time {
+    font-size: 11px;
+  }
+
+  .chat-input-form {
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    gap: 8px;
+  }
+
+  .chat-input-form textarea {
+    min-height: 42px;
+    max-height: 96px;
+    padding: 11px 12px;
+    font-size: 16px;
+  }
+
+  .send-btn {
+    min-width: 46px;
+    height: 46px;
+    padding: 0 13px;
+    border-radius: 14px;
+  }
+
+  .panel-centered {
+    max-width: calc(100vw - 32px);
+    padding: 28px 20px;
+  }
+}
+
+@media (max-width: 420px) {
+  .sidebar {
+    max-height: 136px;
+  }
+
+  .panel-chat {
+    height: calc(100dvh - 136px);
+  }
+
+  .logout-btn {
+    padding: 7px 9px;
+    font-size: 12px;
+  }
+
+  .voice-btn,
+  .secondary-btn {
+    font-size: 12px;
   }
 }
 </style>
