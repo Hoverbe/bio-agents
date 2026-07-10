@@ -326,10 +326,12 @@ let audioPlaybackUnlocked = false;
 let speechStartSent = false;
 let closingVoiceCall = false;
 let speechCandidateSince = 0;
-const vadThreshold = 0.005;
-const vadStartDelay = 80;
-const minRecordingMs = 350;
-const minAudioBytes = 900;
+
+const vadThreshold = 0.015;
+const vadStartDelay = 160;
+const minRecordingMs = 600;
+const minAudioBytes = 2000;
+
 
 // 消息容器引用
 const messagesContainer = ref<HTMLElement | null>(null);
@@ -706,6 +708,12 @@ async function sendRecordedAudio() {
   voiceSocket.send(JSON.stringify({ type: "audio", audio, filename: "utterance.webm", history }));
   recordingChunks = [];
   speechStartSent = false;
+
+
+  speechCandidateSince = 0;
+  speechStartedAt = 0;
+  lastSpeechAt = 0;
+
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
