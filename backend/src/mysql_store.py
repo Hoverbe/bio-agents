@@ -6,7 +6,7 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import pymysql
 from dotenv import load_dotenv
@@ -166,3 +166,41 @@ class MySQLStore:
                     ),
                 )
                 return int(cursor.lastrowid)
+
+    def list_conversations(self, username: str, limit: int = 50) -> List[Dict[str, Any]]:
+        clean_username = username.strip()
+        if not clean_username:
+            raise ValueError("username cannot be empty")
+
+        with self.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        c.id,
+                        c.conversation_type,
+                        c.request_text,
+                        c.response_text,
+                        c.history_json,
+                        c.metadata_json,
+                        c.status,
+                        c.created_at,
+                        c.updated_at
+                    FROM conversations c
+                    INNER JOIN users u ON u.id = c.user_id
+                    WHERE u.username = %s
+                    ORDER BY c.created_at ASC, c.id ASC
+                    LIMIT %s
+                    """,
+                    (clean_username, limit),
+                )
+                rows = cursor.fetchall()
+
+        for row in rows:
+            for key in ("history_json", "metadata_json"):
+                value = row.get(key)
+                if isinstance(value, str):
+                    row[key] = json.loads(value) if value else None
+            row["created_at"] = row["created_at"].isoformat() if row.get("created_at") else None
+            row["updated_at"] = row["updated_at"].isoformat() if row.get("updated_at") else None
+        return rows

@@ -45,6 +45,12 @@ class ChatResponse(BaseModel):
     response: str = Field(..., description="Agent response")
 
 
+class ConversationHistoryResponse(BaseModel):
+    """HTTP response for saved conversation history."""
+
+    conversations: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class TaskItem(BaseModel):
     """Individual task item in the task list."""
 
@@ -300,6 +306,16 @@ def create_app() -> FastAPI:
             logger.exception("RAG document delete failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    @app.get("/conversations/{username}", response_model=ConversationHistoryResponse)
+    def get_conversations(username: str, limit: int = 50) -> ConversationHistoryResponse:
+        try:
+            return ConversationHistoryResponse(
+                conversations=app.state.mysql_store.list_conversations(username=username, limit=limit)
+            )
+        except Exception as exc:
+            logger.exception("Conversation history lookup failed")
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @app.post("/chat", response_model=ChatResponse)
     def chat(payload: ChatRequest) -> ChatResponse:
         try:
@@ -309,6 +325,10 @@ def create_app() -> FastAPI:
                 request_text=payload.message,
                 response_text=response,
                 conversation_type="chat",
+                history=[
+                    {"role": "user", "content": payload.message},
+                    {"role": "assistant", "content": response},
+                ],
             )
             return ChatResponse(response=response)
         except Exception as exc:
@@ -383,12 +403,14 @@ def create_app() -> FastAPI:
                 response_parts.append(str(exc))
                 yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
             finally:
+                response_text = "".join(response_parts)
+                saved_history = [*(payload.history or []), {"role": "assistant", "content": response_text}]
                 app.state.mysql_store.save_conversation(
                     username=payload.username,
                     request_text=payload.topic,
-                    response_text="".join(response_parts),
+                    response_text=response_text,
                     conversation_type="research_stream",
-                    history=payload.history,
+                    history=saved_history,
                     status=status,
                 )
 
