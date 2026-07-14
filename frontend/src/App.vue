@@ -65,6 +65,65 @@
 
     <!-- 登录后：主界面 -->
     <div v-else class="layout layout-fullscreen">
+      <section v-if="mobileCallVisible" class="mobile-call-screen">
+        <div class="mobile-call-bg" aria-hidden="true"></div>
+        <button class="mobile-call-back" type="button" aria-label="Back to chat" @click="closeMobileCall">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+
+        <div class="mobile-call-body">
+          <div class="mobile-call-hero">
+            <div class="mobile-wave mobile-wave-left" aria-hidden="true">
+              <span v-for="bar in 16" :key="`left-${bar}`"></span>
+            </div>
+            <img class="mobile-call-avatar" :src="agentProfileImage" alt="Bio-Agent avatar" />
+            <div class="mobile-wave mobile-wave-right" aria-hidden="true">
+              <span v-for="bar in 16" :key="`right-${bar}`"></span>
+            </div>
+          </div>
+
+          <h2 class="mobile-call-name">小衍</h2>
+          <div class="mobile-call-state">✧ {{ mobileVoiceStatus }} ✧</div>
+          <div class="mobile-call-time">{{ voiceElapsedLabel }}</div>
+
+          <div class="mobile-live-title">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 10v4M9 7v10M13 4v16M17 8v8M21 11v2" />
+            </svg>
+            <span>实时字幕 · live transcript</span>
+          </div>
+          <p class="mobile-live-text">{{ mobileTranscript }}</p>
+        </div>
+
+        <div class="mobile-call-controls">
+          <button class="mobile-call-tool" :class="{ active: mobileMuted }" type="button" @click="mobileMuted = !mobileMuted">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v8a4 4 0 0 1-8 0V3M8 19v3M5 22h6M16 9l5 5M21 9l-5 5" />
+            </svg>
+            <span>静音</span>
+          </button>
+          <button class="mobile-call-tool" :class="{ active: mobilePrivate }" type="button" @click="mobilePrivate = !mobilePrivate">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 11V8a5 5 0 0 1 10 0v3M6 11h12v10H6zM12 15v2" />
+            </svg>
+            <span>私密模式</span>
+          </button>
+          <button class="mobile-call-tool" :class="{ active: mobileSpeaker }" type="button" @click="mobileSpeaker = !mobileSpeaker">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 9v6h4l5 4V5L9 9H5zM17 9a4 4 0 0 1 0 6M19.5 6.5a8 8 0 0 1 0 11" />
+            </svg>
+            <span>扬声器</span>
+          </button>
+        </div>
+
+        <button class="mobile-end-call" type="button" aria-label="End call" @click="closeMobileCall">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6.6 10.8c3.5-2.4 7.3-2.4 10.8 0l-2.1 2.1c-.4.4-1 .5-1.5.3a5.6 5.6 0 0 0-3.6 0c-.5.2-1.1.1-1.5-.3l-2.1-2.1z" />
+          </svg>
+        </button>
+      </section>
       <!-- 左侧：聊天列表和用户信息 -->
       <aside class="sidebar">
         <div class="sidebar-header">
@@ -130,6 +189,50 @@
       <template v-else>
       <!-- 中间：聊天内容 -->
       <section class="panel panel-chat">
+        <header class="mobile-chat-topbar">
+          <button class="mobile-icon-btn" type="button" aria-label="Back" @click="handleLogout">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M15 5l-7 7 7 7" />
+            </svg>
+          </button>
+          <div class="mobile-chat-person">
+            <h2>小衍</h2>
+            <span>online</span>
+          </div>
+          <div class="mobile-chat-actions">
+            <button class="mobile-icon-btn" type="button" aria-label="Video call">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 7h9a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zM17 11l4-3v8l-4-3" />
+              </svg>
+            </button>
+            <button class="mobile-icon-btn" type="button" aria-label="Call" @click="openMobileCall">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6.6 3.8l3 3-2 2c1.1 2.3 2.9 4.1 5.2 5.2l2-2 3 3c.3.3.4.8.2 1.2-.8 1.8-2.5 3-4.5 3C8.4 19.2 4.8 15.6 4.8 10.5c0-2 .9-3.7 2.6-4.5.4-.2.9-.1 1.2.2z" />
+              </svg>
+            </button>
+            <button class="mobile-icon-btn" type="button" aria-label="More" @click="mobileMenuOpen = !mobileMenuOpen">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 6h.01M12 12h.01M12 18h.01" />
+              </svg>
+            </button>
+          </div>
+
+          <div v-if="mobileMenuOpen" class="mobile-menu-panel">
+            <button type="button" class="mobile-menu-action" @click="handleMobileNewChat">新对话</button>
+            <div class="mobile-menu-title">历史对话</div>
+            <button
+              v-for="(chat, index) in chatHistory"
+              :key="`mobile-history-${index}`"
+              type="button"
+              class="mobile-history-item"
+              :class="{ active: currentChatIndex === index }"
+              @click="handleMobileSwitchChat(index)"
+            >
+              <span>{{ chat.title }}</span>
+              <small>{{ chat.timestamp }}</small>
+            </button>
+          </div>
+        </header>
         <header class="chat-header">
           <div class="chat-title-bar">
             <h2>{{ currentChatTitle }}</h2>
@@ -166,6 +269,7 @@
             <!-- Agent消息（群聊效果） -->
             <template v-else>
               <div :class="['message-avatar', 'bot-avatar', getAgentAvatarClass(message.agent)]">
+                <img class="mobile-bot-avatar-image" :src="agentProfileImage" alt="" />
                 <span>{{ getAgentAvatarText(message.agent) }}</span>
               </div>
               <div class="message-content">
@@ -189,15 +293,25 @@
 
         <!-- 输入框 -->
         <form class="chat-input-form" @submit.prevent="handleSend">
+          <button class="mobile-compose-tool" type="button" aria-label="Attach file">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 11.5l-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-2.8-2.8l8.5-8.5" />
+            </svg>
+          </button>
           <div class="input-wrapper">
             <textarea
               v-model="inputMessage"
-              placeholder="输入您的问题..."
+              :placeholder="chatInputPlaceholder"
               rows="2"
               :disabled="loading"
               @keydown.enter.exact.prevent="handleSend"
             ></textarea>
           </div>
+          <button class="mobile-compose-tool" type="button" aria-label="Emoji">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8.5 10h.01M15.5 10h.01M8 14c1.1 1.3 2.4 2 4 2s2.9-.7 4-2" />
+            </svg>
+          </button>
           <button class="send-btn" type="submit" :disabled="loading || !inputMessage.trim()">
             <svg viewBox="0 0 24 24" width="20" height="20">
               <path d="M22 2L11 13l3 5H2l8-10 2 2v8z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
@@ -251,9 +365,10 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, computed, nextTick, watch, onBeforeUnmount } from "vue";
+import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from "vue";
 import { getConversationHistory, getVoiceWsUrl, isVoiceWsSecure, runResearchStream, type ConversationRecord } from "./services/api";
 import AdminPanel from "./components/AdminPanel.vue";
+import agentProfileImage from "./assets/bio-agent-profile-chun.png";
 
 interface Message {
   content: string;
@@ -291,6 +406,14 @@ const currentView = ref<"chat" | "admin">("chat");
 const chatHistory = ref<Chat[]>([]);
 const currentChatIndex = ref(-1);
 const inputMessage = ref("");
+const isMobileViewport = ref(false);
+const mobileMenuOpen = ref(false);
+const mobileCallVisible = ref(false);
+const mobileMuted = ref(false);
+const mobilePrivate = ref(false);
+const mobileSpeaker = ref(true);
+const voiceElapsedSeconds = ref(0);
+let voiceElapsedTimer = 0;
 
 // 任务清单
 const taskList = ref<TaskItem[]>([]);
@@ -349,6 +472,30 @@ const currentMessages = computed(() => currentChat.value?.messages || []);
 const currentChatTitle = computed(() => {
   if (!currentChat.value) return "新对话";
   return currentChat.value.title;
+});
+
+const chatInputPlaceholder = computed(() => isMobileViewport.value ? "Write a letter..." : "输入您的问题...");
+
+const mobileVoiceStatus = computed(() => {
+  const map: Record<VoiceState, string> = {
+    idle: "calling",
+    listening: "listening",
+    thinking: "thinking",
+    speaking: "speaking",
+    interrupted: "interrupted"
+  };
+  return map[voiceState.value];
+});
+
+const voiceElapsedLabel = computed(() => {
+  const minutes = Math.floor(voiceElapsedSeconds.value / 60).toString().padStart(2, "0");
+  const seconds = (voiceElapsedSeconds.value % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+});
+
+const mobileTranscript = computed(() => {
+  const lastAssistant = [...currentMessages.value].reverse().find((message) => !message.isUser);
+  return currentBotVoiceMessage?.content || lastAssistant?.content || "等待你开始说话";
 });
 
 // 获取格式化时间
@@ -499,6 +646,55 @@ function clearCurrentChat() {
     currentChat.value.lastMessage = "";
     taskList.value = [];
     saveChatHistory();
+  }
+}
+
+function updateViewportMode() {
+  isMobileViewport.value = window.matchMedia("(max-width: 768px)").matches;
+  if (!isMobileViewport.value) {
+    mobileMenuOpen.value = false;
+    mobileCallVisible.value = false;
+    stopMobileCallTimer();
+  }
+}
+
+function handleMobileNewChat() {
+  mobileMenuOpen.value = false;
+  startNewChat();
+}
+
+function handleMobileSwitchChat(index: number) {
+  mobileMenuOpen.value = false;
+  switchChat(index);
+}
+
+function startMobileCallTimer() {
+  window.clearInterval(voiceElapsedTimer);
+  voiceElapsedSeconds.value = 0;
+  voiceElapsedTimer = window.setInterval(() => {
+    voiceElapsedSeconds.value += 1;
+  }, 1000);
+}
+
+function stopMobileCallTimer() {
+  window.clearInterval(voiceElapsedTimer);
+  voiceElapsedTimer = 0;
+}
+
+async function openMobileCall() {
+  mobileMenuOpen.value = false;
+  mobileCallVisible.value = true;
+  startMobileCallTimer();
+  if (!voiceEnabled.value) {
+    await toggleVoiceCall();
+  }
+}
+
+function closeMobileCall() {
+  mobileCallVisible.value = false;
+  stopMobileCallTimer();
+  if (voiceEnabled.value) {
+    stopVoiceCall();
   }
 }
 
@@ -837,7 +1033,16 @@ function playNextAudio() {
   });
 }
 
-onBeforeUnmount(() => stopVoiceCall(false));
+onMounted(() => {
+  updateViewportMode();
+  window.addEventListener("resize", updateViewportMode);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", updateViewportMode);
+  stopMobileCallTimer();
+  stopVoiceCall(false);
+});
 
 // 发送消息
 async function handleSend() {
@@ -2117,6 +2322,14 @@ textarea {
   border-radius: 999px;
 }
 
+.mobile-chat-topbar,
+.mobile-menu-panel,
+.mobile-compose-tool,
+.mobile-bot-avatar-image,
+.mobile-call-screen {
+  display: none;
+}
+
 /* 响应式布局 */
 @media (max-width: 1200px) {
   .task-panel {
@@ -2325,6 +2538,599 @@ textarea {
   .voice-btn,
   .secondary-btn {
     font-size: 12px;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-shell.expanded {
+    background: #f7fafd;
+  }
+
+  .layout-fullscreen {
+    position: relative;
+    height: 100dvh;
+    min-height: 100dvh;
+    --mobile-bg-image: none;
+  }
+
+  .layout-fullscreen > .sidebar,
+  .layout-fullscreen > .task-panel,
+  .panel-chat > .chat-header {
+    display: none;
+  }
+
+  .panel-chat {
+    position: relative;
+    min-width: 0;
+    width: 100%;
+    height: 100dvh;
+    flex: 1 1 auto;
+    border: none;
+    box-shadow: none;
+    color: #2f3a48;
+    background:
+      linear-gradient(180deg, rgba(248, 251, 255, 0.86), rgba(241, 247, 253, 0.9)),
+      var(--mobile-bg-image),
+      #f7fafd;
+    background-size: cover;
+    background-position: center;
+  }
+
+  .panel-chat::before {
+    display: none;
+  }
+
+  .mobile-chat-topbar {
+    position: relative;
+    z-index: 4;
+    height: calc(88px + env(safe-area-inset-top));
+    padding: calc(24px + env(safe-area-inset-top)) 18px 12px;
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    background: rgba(250, 252, 255, 0.72);
+    backdrop-filter: blur(16px);
+  }
+
+  .mobile-chat-person {
+    text-align: center;
+    min-width: 0;
+  }
+
+  .mobile-chat-person h2 {
+    margin: 0;
+    color: #263241;
+    font-size: 22px;
+    line-height: 1.05;
+    font-weight: 500;
+  }
+
+  .mobile-chat-person span {
+    display: block;
+    margin-top: 5px;
+    color: #7b8592;
+    font-size: 15px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+  }
+
+  .mobile-chat-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .mobile-icon-btn {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    color: #263241;
+    background: transparent;
+    display: grid;
+    place-items: center;
+  }
+
+  .mobile-icon-btn svg,
+  .mobile-compose-tool svg,
+  .mobile-call-back svg,
+  .mobile-call-tool svg,
+  .mobile-live-title svg {
+    width: 26px;
+    height: 26px;
+  }
+
+  .mobile-icon-btn svg path,
+  .mobile-compose-tool svg path,
+  .mobile-call-back svg path,
+  .mobile-call-tool svg path,
+  .mobile-live-title svg path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .mobile-menu-panel {
+    position: absolute;
+    top: calc(76px + env(safe-area-inset-top));
+    right: 14px;
+    width: min(278px, calc(100vw - 28px));
+    max-height: min(420px, calc(100dvh - 112px));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    overflow-y: auto;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-menu-action,
+  .mobile-history-item {
+    width: 100%;
+    border: 0;
+    text-align: left;
+    color: #243041;
+    background: rgba(241, 245, 249, 0.72);
+    border-radius: 12px;
+    cursor: pointer;
+  }
+
+  .mobile-menu-action {
+    padding: 12px 14px;
+    font-size: 15px;
+    font-weight: 650;
+  }
+
+  .mobile-menu-title {
+    padding: 5px 4px 0;
+    color: #7b8592;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .mobile-history-item {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .mobile-history-item.active {
+    color: #1d4ed8;
+    background: rgba(219, 234, 254, 0.9);
+  }
+
+  .mobile-history-item span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+  }
+
+  .mobile-history-item small {
+    color: #8a94a3;
+    font-size: 11px;
+  }
+
+  .messages-container {
+    padding: 30px 18px 16px;
+    gap: 26px;
+    background: transparent;
+  }
+
+  .message {
+    max-width: 88%;
+    gap: 10px;
+    align-items: flex-end;
+  }
+
+  .message.is-user {
+    max-width: 72%;
+  }
+
+  .message-avatar {
+    width: 38px;
+    height: 38px;
+  }
+
+  .bot-avatar {
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  }
+
+  .bot-avatar span {
+    display: none;
+  }
+
+  .mobile-bot-avatar-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+  }
+
+  .message-content {
+    padding: 15px 17px;
+    border-radius: 4px 18px 18px 18px;
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow: 0 8px 26px rgba(44, 57, 78, 0.08);
+    backdrop-filter: blur(8px);
+  }
+
+  .is-user .message-content {
+    color: #304052;
+    border-radius: 18px 18px 4px 18px;
+    background: rgba(226, 234, 246, 0.9);
+    box-shadow: 0 8px 24px rgba(89, 116, 154, 0.12);
+  }
+
+  .message-content p,
+  .is-user .message-content p {
+    color: inherit;
+    font-size: 17px;
+    line-height: 1.55;
+  }
+
+  .agent-name {
+    display: none;
+  }
+
+  .message-time,
+  .is-user .message-time {
+    margin-top: 10px;
+    color: #96a0ad;
+    font-size: 12px;
+  }
+
+  .typing-indicator {
+    color: #8b96a5;
+    background: transparent;
+    padding: 4px 0 4px 54px;
+    letter-spacing: 0.18em;
+  }
+
+  .typing-indicator::before,
+  .typing-indicator::after {
+    content: "✦";
+    color: #a8b1bd;
+  }
+
+  .typing-dots {
+    display: none;
+  }
+
+  .chat-input-form {
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px calc(18px + env(safe-area-inset-bottom));
+    border-top: 0;
+    background: rgba(247, 250, 253, 0.82);
+    backdrop-filter: blur(14px);
+  }
+
+  .chat-input-form .input-wrapper {
+    min-width: 0;
+  }
+
+  .chat-input-form textarea {
+    min-height: 54px;
+    max-height: 96px;
+    padding: 15px 14px;
+    border: 0;
+    border-radius: 999px;
+    color: #2d3948;
+    background: rgba(255, 255, 255, 0.86);
+    box-shadow: 0 10px 30px rgba(45, 57, 78, 0.08);
+    font-size: 16px;
+    line-height: 1.35;
+  }
+
+  .chat-input-form textarea::placeholder {
+    color: #8d98a6;
+  }
+
+  .mobile-compose-tool {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    color: #6b7785;
+    background: transparent;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+  }
+
+  .send-btn {
+    min-width: 54px;
+    width: 54px;
+    height: 54px;
+    padding: 0;
+    border-radius: 50%;
+    color: #ffffff;
+    background: #26384d;
+    box-shadow: 0 12px 28px rgba(38, 56, 77, 0.2);
+  }
+
+  .send-btn svg {
+    transform: rotate(-45deg);
+  }
+
+  .send-btn svg path {
+    stroke-width: 2.4;
+  }
+
+  .mobile-call-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100dvh;
+    padding: calc(74px + env(safe-area-inset-top)) 24px calc(26px + env(safe-area-inset-bottom));
+    color: #2f3a48;
+    background:
+      linear-gradient(180deg, rgba(249, 252, 255, 0.88), rgba(237, 244, 251, 0.9)),
+      var(--mobile-bg-image),
+      #f7fafd;
+    background-size: cover;
+    background-position: center;
+  }
+
+  .mobile-call-bg {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(circle at 32% 20%, rgba(255, 255, 255, 0.84), transparent 24%),
+      radial-gradient(circle at 75% 42%, rgba(219, 234, 254, 0.56), transparent 26%);
+    filter: blur(1px);
+  }
+
+  .mobile-call-back {
+    position: absolute;
+    top: calc(74px + env(safe-area-inset-top));
+    left: 24px;
+    z-index: 2;
+    width: 52px;
+    height: 52px;
+    border: 1px solid rgba(203, 213, 225, 0.45);
+    border-radius: 50%;
+    color: #526171;
+    background: rgba(255, 255, 255, 0.34);
+    display: grid;
+    place-items: center;
+    backdrop-filter: blur(12px);
+  }
+
+  .mobile-call-body {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+  }
+
+  .mobile-call-hero {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 172px 1fr;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .mobile-call-avatar {
+    width: 172px;
+    height: 172px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: #ffffff;
+    box-shadow: 0 18px 38px rgba(30, 41, 59, 0.14);
+  }
+
+  .mobile-wave {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    overflow: hidden;
+    color: rgba(116, 127, 142, 0.42);
+  }
+
+  .mobile-wave span {
+    width: 4px;
+    height: 18px;
+    border-radius: 999px;
+    background: currentColor;
+    animation: mobileWave 1.35s ease-in-out infinite;
+  }
+
+  .mobile-wave span:nth-child(2n) { height: 30px; animation-delay: -0.2s; }
+  .mobile-wave span:nth-child(3n) { height: 42px; animation-delay: -0.45s; }
+  .mobile-wave span:nth-child(5n) { height: 24px; animation-delay: -0.72s; }
+
+  .mobile-call-name {
+    margin: 44px 0 0;
+    color: #263241;
+    font-size: 42px;
+    line-height: 1;
+    font-weight: 500;
+  }
+
+  .mobile-call-state {
+    margin-top: 18px;
+    color: #8d98a6;
+    font-size: 18px;
+    letter-spacing: 0.28em;
+  }
+
+  .mobile-call-time {
+    margin-top: 20px;
+    color: #526171;
+    font-size: 18px;
+    letter-spacing: 0.22em;
+  }
+
+  .mobile-live-title {
+    margin-top: 54px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #7b8795;
+    font-size: 17px;
+  }
+
+  .mobile-live-title svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .mobile-live-text {
+    width: 100%;
+    min-height: 64px;
+    max-height: 118px;
+    margin: 20px 0 0;
+    padding: 18px 20px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    border-radius: 26px;
+    color: #2f3a48;
+    background: rgba(255, 255, 255, 0.42);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+    text-align: center;
+    font-size: 24px;
+    line-height: 1.35;
+    backdrop-filter: blur(12px);
+  }
+
+  .mobile-call-controls {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+    margin-bottom: 30px;
+  }
+
+  .mobile-call-tool {
+    min-width: 0;
+    border: 0;
+    color: #667382;
+    background: transparent;
+    display: grid;
+    justify-items: center;
+    gap: 12px;
+  }
+
+  .mobile-call-tool svg {
+    width: 76px;
+    height: 76px;
+    padding: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.42);
+    box-shadow: 0 14px 28px rgba(30, 41, 59, 0.08);
+    backdrop-filter: blur(12px);
+  }
+
+  .mobile-call-tool.active svg {
+    color: #1d4ed8;
+    background: rgba(219, 234, 254, 0.72);
+  }
+
+  .mobile-call-tool span {
+    color: #8d98a6;
+    font-size: 16px;
+  }
+
+  .mobile-end-call {
+    position: relative;
+    z-index: 1;
+    width: 96px;
+    height: 96px;
+    border: 0;
+    border-radius: 50%;
+    color: #ffffff;
+    background: #cf8d94;
+    box-shadow: 0 18px 34px rgba(166, 85, 96, 0.24);
+    display: grid;
+    place-items: center;
+  }
+
+  .mobile-end-call svg {
+    width: 44px;
+    height: 44px;
+  }
+
+  .mobile-end-call svg path {
+    fill: currentColor;
+  }
+
+  @keyframes mobileWave {
+    0%, 100% { transform: scaleY(0.55); opacity: 0.45; }
+    50% { transform: scaleY(1); opacity: 0.9; }
+  }
+}
+
+@media (max-width: 420px) {
+  .mobile-chat-topbar {
+    grid-template-columns: 40px 1fr auto;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .mobile-chat-actions {
+    gap: 5px;
+  }
+
+  .mobile-icon-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .mobile-call-hero {
+    grid-template-columns: 1fr 146px 1fr;
+  }
+
+  .mobile-call-avatar {
+    width: 146px;
+    height: 146px;
+  }
+
+  .mobile-call-name {
+    margin-top: 34px;
+    font-size: 38px;
+  }
+
+  .mobile-call-controls {
+    gap: 10px;
+  }
+
+  .mobile-call-tool svg {
+    width: 68px;
+    height: 68px;
+    padding: 18px;
   }
 }
 </style>
