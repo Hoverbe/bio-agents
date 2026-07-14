@@ -3,6 +3,7 @@ import './style.css'
 import App from './App.vue'
 import AdminPanel from './components/AdminPanel.vue'
 
-const rootComponent = window.location.pathname === '/admin' ? AdminPanel : App
+const adminPaths = ['/admin', '/bio-agent/admin']
+const rootComponent = adminPaths.includes(window.location.pathname) ? AdminPanel : App
 
 createApp(rootComponent).mount('#app')

@@ -5,11 +5,16 @@ import base64
 import io
 import os
 import re
+import tempfile
 import time
+import wave
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
-from openai import OpenAI
+from gradio_client import Client, handle_file
 
 from backend.src.agents.bio_agent import BioAgent
 
@@ -58,18 +63,12 @@ class VoiceAgent:
 
     def __init__(self, bio_agent: BioAgent):
         self.bio_agent = bio_agent
-        self.audio_client = OpenAI(
-            api_key=os.getenv("AUDIO_API_KEY"),
-            base_url=os.getenv("AUDIO_BASE_URL"),
-            timeout=float(os.getenv("AUDIO_TIMEOUT", "30")),
-        )
-        self.audio_model = os.getenv("AUDIO_MODEL_ID")
-        self.asr_model = os.getenv("AUDIO_ASR_MODEL_ID") or "FunAudioLLM/SenseVoiceSmall"
-        self.tts_model = os.getenv("AUDIO_TTS_MODEL_ID") or "FunAudioLLM/CosyVoice2-0.5B"
-        self.tts_voice = os.getenv("AUDIO_TTS_VOICE") or f"{self.tts_model}:alex"
-        self.tts_format = os.getenv("AUDIO_TTS_FORMAT", "mp3")
-        self.tts_sample_rate = int(os.getenv("AUDIO_TTS_SAMPLE_RATE", "32000"))
-        self.tts_speed = float(os.getenv("AUDIO_TTS_SPEED", "1"))
+        audio_host = os.getenv("LOCAL_AUDIO_HOST", "localhost")
+        self.asr_base_url = os.getenv("LOCAL_ASR_BASE_URL", f"http://{audio_host}:8005").rstrip("/")
+        self.tts_base_url = os.getenv("LOCAL_TTS_BASE_URL", f"http://{audio_host}:8006").rstrip("/")
+        self.asr_language = os.getenv("LOCAL_AUDIO_ASR_LANGUAGE", "Auto")
+        self.tts_format = "wav"
+        self.asr_client = Client(self.asr_base_url)
         self.turns: Dict[str, VoiceTurn] = {}
         self.sessions: Dict[str, WarmSession] = {}
         self._turn_counter = 0
@@ -108,13 +107,25 @@ class VoiceAgent:
 
     async def transcribe(self, audio_bytes: bytes, filename: str = "utterance.webm") -> str:
         def _call() -> str:
-            with io.BytesIO(audio_bytes) as audio_file:
-                audio_file.name = filename
-                result = self.audio_client.audio.transcriptions.create(
-                    model=self.asr_model,
-                    file=audio_file,
+            suffix = Path(filename or "utterance.webm").suffix or ".webm"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+            try:
+                result = self.asr_client.predict(
+                    audio_upload=handle_file(tmp_path),
+                    lang_disp=self.asr_language,
+                    api_name="/run",
                 )
-                return result if isinstance(result, str) else getattr(result, "text", "")
+                if isinstance(result, (list, tuple)):
+                    if len(result) >= 2:
+                        return str(result[1] or "")
+                    if len(result) == 1:
+                        return str(result[0] or "")
+                    return ""
+                return str(result or "")
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
 
         return (await asyncio.to_thread(_call)).strip()
 
@@ -152,20 +163,33 @@ class VoiceAgent:
             turn.answer += chunk
             yield chunk
 
+    @staticmethod
+    def pcm_to_wav(pcm_audio: bytes, sample_rate: int = 24000) -> bytes:
+        if not pcm_audio:
+            return b""
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(pcm_audio)
+        return wav_buffer.getvalue()
+
     async def synthesize(self, text: str) -> bytes:
         if not text.strip():
             return b""
 
         def _call() -> bytes:
-            response = self.audio_client.audio.speech.create(
-                model=self.tts_model,
-                voice=self.tts_voice,
-                input=text,
-                response_format=self.tts_format,
-                speed=self.tts_speed,
-                extra_body={"stream": True, "sample_rate": self.tts_sample_rate},
+            payload = urlencode({"tts_text": text}).encode("utf-8")
+            request = Request(
+                f"{self.tts_base_url}/inference_zero_shot",
+                data=payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
             )
-            return response.read()
+            with urlopen(request, timeout=60) as response:
+                pcm_audio = response.read()
+            return self.pcm_to_wav(pcm_audio)
 
         return await asyncio.to_thread(_call)
 

@@ -544,6 +544,7 @@ async function toggleVoiceCall() {
   const sessionId = `${username.value}-${Date.now()}`;
   closingVoiceCall = false;
   voiceSocket = new WebSocket(getVoiceWsUrl(sessionId));
+  voiceSocket.onopen = () => showVoiceNotice("语音连接已建立，请开始说话。");
   voiceSocket.onmessage = (message) => handleVoiceEvent(JSON.parse(message.data));
   voiceSocket.onerror = () => handleVoiceSocketClosed();
   voiceSocket.onclose = () => handleVoiceSocketClosed();
@@ -552,11 +553,15 @@ async function toggleVoiceCall() {
   startVadLoop();
 }
 
-function showVoiceError(message: string) {
+function showVoiceNotice(message: string) {
   if (currentChat.value) {
     currentChat.value.messages.push({ content: message, isUser: false, timestamp: getTimeString(), agent: "voice_agent", agentName: "语音Agent" });
     nextTick(() => scrollToBottom());
   }
+}
+
+function showVoiceError(message: string) {
+  showVoiceNotice(message);
 }
 
 async function unlockAudioPlayback() {
@@ -638,6 +643,10 @@ function startVadLoop() {
     if (speaking) {
       if (!speechCandidateSince) speechCandidateSince = now;
       lastSpeechAt = now;
+      if (!mediaRecorder || mediaRecorder.state === "inactive") {
+        startRecording();
+        speechStartedAt = now;
+      }
     } else {
       speechCandidateSince = 0;
     }
@@ -646,15 +655,8 @@ function startVadLoop() {
     if (stableSpeaking && (voiceState.value === "speaking" || voiceState.value === "thinking")) {
       interruptVoiceTurn();
     }
-    if (stableSpeaking) {
-      if (!speechStartSent) {
-        sendSpeechStart();
-        speechStartSent = true;
-      }
-      if (!mediaRecorder || mediaRecorder.state === "inactive") {
-        startRecording();
-        speechStartedAt = now;
-      }
+    if (stableSpeaking && !speechStartSent && sendSpeechStart()) {
+      speechStartSent = true;
     }
     if (mediaRecorder?.state === "recording" && now - lastSpeechAt > 950 && now - speechStartedAt > minRecordingMs) {
       stopRecording(true);
@@ -662,10 +664,11 @@ function startVadLoop() {
   }, 80);
 }
 
-function sendSpeechStart() {
-  if (voiceSocket?.readyState !== WebSocket.OPEN) return;
+function sendSpeechStart(): boolean {
+  if (voiceSocket?.readyState !== WebSocket.OPEN) return false;
   const history = currentMessages.value.map((msg) => ({ role: msg.isUser ? "user" : "assistant", content: msg.content }));
   voiceSocket.send(JSON.stringify({ type: "speech_start", history }));
+  return true;
 }
 
 function getSupportedRecordingType(): string {
@@ -693,14 +696,29 @@ function stopRecording(send: boolean) {
 }
 
 async function sendRecordedAudio() {
-  if (!recordingChunks.length || voiceSocket?.readyState !== WebSocket.OPEN) return;
-  const blob = new Blob(recordingChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
-  if (blob.size < minAudioBytes) {
+  if (!recordingChunks.length) {
+    speechStartSent = false;
+    speechCandidateSince = 0;
+    return;
+  }
+  if (voiceSocket?.readyState !== WebSocket.OPEN) {
+    showVoiceNotice("已检测到语音，但语音连接尚未就绪，请稍后再说一次。");
     recordingChunks = [];
     speechStartSent = false;
     speechCandidateSince = 0;
     return;
   }
+  const blob = new Blob(recordingChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
+  if (blob.size < minAudioBytes) {
+    showVoiceNotice(`已检测到语音，但录音太短或音量太低（${blob.size} 字节），请靠近麦克风再说一次。`);
+    recordingChunks = [];
+    speechStartSent = false;
+    speechCandidateSince = 0;
+    speechStartedAt = 0;
+    lastSpeechAt = 0;
+    return;
+  }
+  voiceState.value = "thinking";
   const audio = await blobToBase64(blob);
   const history = currentMessages.value.map((msg) => ({ role: msg.isUser ? "user" : "assistant", content: msg.content }));
   voiceSocket.send(JSON.stringify({ type: "audio", audio, filename: "utterance.webm", history }));
@@ -740,6 +758,7 @@ function stopPlayback(clearQueue: boolean) {
 
 function handleVoiceEvent(event: any) {
   if (event.type === "state") voiceState.value = event.state;
+  if (event.type === "prewarmed") voiceState.value = "listening";
   if (event.type === "interrupted") voiceState.value = "interrupted";
   if (event.type === "asr_ignored") {
     voiceState.value = voiceEnabled.value ? "listening" : "idle";
