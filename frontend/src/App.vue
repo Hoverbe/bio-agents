@@ -11,11 +11,7 @@
       <section class="panel panel-form panel-centered">
         <header class="panel-head">
           <div class="logo">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M12 2.5c-.7 0-1.4.2-2 .6L4.6 7C3.6 7.6 3 8.7 3 9.9v4.2c0 1.2.6 2.3 1.6 2.9l5.4 3.9c1.2.8 2.8.8 4 0l5.4-3.9c1-.7 1.6-1.7 1.6-2.9V9.9c0-1.2-.6-2.3-1.6-2.9L14 3.1a3.6 3.6 0 0 0-2-.6Z"
-              />
-            </svg>
+            <img :src="agentProfileImage" alt="Bio-Agent avatar" />
           </div>
           <div>
             <h1>Bio-Agent</h1>
@@ -196,7 +192,7 @@
             </svg>
           </button>
           <div class="mobile-chat-person">
-            <h2>小衍</h2>
+            <h2>一阳生-BioAgent</h2>
             <span>online</span>
           </div>
           <div class="mobile-chat-actions">
@@ -273,7 +269,6 @@
                 <span>{{ getAgentAvatarText(message.agent) }}</span>
               </div>
               <div class="message-content">
-                <span v-if="message.agentName" class="agent-name">{{ message.agentName }}</span>
                 <p>{{ message.content }}</p>
                 <span class="message-time">{{ message.agentName || 'Bio-Agent' }} · {{ message.timestamp }}</span>
               </div>
@@ -1487,19 +1482,20 @@ watch(chatHistory, () => {
 }
 
 .logo {
-  width: 52px;
-  height: 52px;
+  width: 64px;
+  height: 64px;
   display: grid;
   place-items: center;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
-  box-shadow: 0 12px 28px rgba(59, 130, 246, 0.4);
+  overflow: hidden;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
 }
 
-.logo svg {
-  width: 28px;
-  height: 28px;
-  fill: #f8fafc;
+.logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .form {
@@ -1937,8 +1933,9 @@ textarea {
 
 .message {
   display: flex;
-  gap: 12px;
-  max-width: 85%;
+  gap: 14px;
+  max-width: 78%;
+  align-items: flex-end;
 }
 
 .message.is-user {
@@ -1947,8 +1944,8 @@ textarea {
 }
 
 .message-avatar {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -1964,45 +1961,60 @@ textarea {
 }
 
 .bot-avatar {
-  background: rgba(148, 163, 184, 0.2);
+  overflow: hidden;
+  background: #ffffff;
   color: #64748b;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
 }
 
 /* 主控调度专家 - 蓝色 */
 .bot-avatar.agent-master {
-  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
-  color: white;
+  background: #ffffff;
+  color: #64748b;
 }
 
 /* 知识问答专家 - 绿色 */
 .bot-avatar.agent-knowledge {
-  background: linear-gradient(135deg, #10b981, #059669);
-  color: white;
+  background: #ffffff;
+  color: #64748b;
 }
 
 /* 自动化执行专家 - 橙色 */
 .bot-avatar.agent-automation {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
-  color: white;
+  background: #ffffff;
+  color: #64748b;
 }
 
 /* 默认Agent */
 .bot-avatar.agent-default {
-  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
-  color: white;
+  background: #ffffff;
+  color: #64748b;
+}
+
+.bot-avatar > span {
+  display: none;
+}
+
+.mobile-bot-avatar-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .message-content {
-  background: rgba(248, 250, 252, 0.9);
-  padding: 12px 16px;
-  border-radius: 18px;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  background: rgba(248, 250, 252, 0.92);
+  padding: 14px 17px;
+  border-radius: 4px 18px 18px 18px;
+  box-shadow: 0 8px 26px rgba(15, 23, 42, 0.06);
 }
 
 .is-user .message-content {
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
-  color: white;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+  background: rgba(226, 234, 246, 0.95);
+  color: #304052;
+  border-radius: 18px 18px 4px 18px;
+  box-shadow: 0 8px 24px rgba(89, 116, 154, 0.12);
 }
 
 .agent-name {
@@ -2015,62 +2027,109 @@ textarea {
 
 .message-content p {
   margin: 0;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .is-user .message-content p {
-  color: white;
+  color: inherit;
 }
 
 .message-time {
   display: block;
-  margin-top: 6px;
+  margin-top: 9px;
   font-size: 12px;
-  color: #94a3b8;
+  color: #8b96a5;
 }
 
 .is-user .message-time {
-  color: rgba(255, 255, 255, 0.7);
+  color: #8b96a5;
 }
 
 /* 输入框 */
 .chat-input-form {
   display: flex;
-  gap: 12px;
-  padding: 16px 24px;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 24px;
   border-top: 1px solid rgba(148, 163, 184, 0.2);
-  background: rgba(255, 255, 255, 0.98);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .input-wrapper {
   flex: 1;
+  min-width: 0;
 }
 
 .chat-input-form textarea {
   width: 100%;
   box-sizing: border-box;
-  border-radius: 16px;
+  border-radius: 999px;
   resize: none;
-  min-height: 48px;
+  min-height: 54px;
+  max-height: 112px;
+  padding: 15px 16px;
+  background: rgba(248, 250, 252, 0.92);
+  box-shadow: 0 10px 30px rgba(45, 57, 78, 0.06);
+}
+
+.mobile-compose-tool {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #6b7785;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.mobile-compose-tool svg {
+  width: 25px;
+  height: 25px;
+}
+
+.mobile-compose-tool svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .send-btn {
-  padding: 12px 16px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  width: 54px;
+  height: 54px;
+  min-width: 54px;
+  padding: 0;
+  border-radius: 50%;
+  background: #26384d;
   border: none;
   color: white;
   cursor: pointer;
   transition: transform 0.2s, box-shadow 0.2s;
   flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 12px 28px rgba(38, 56, 77, 0.18);
 }
 
 .send-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 14px 30px rgba(38, 56, 77, 0.24);
+}
+
+.send-btn svg {
+  transform: rotate(-45deg);
+}
+
+.send-btn svg path {
+  stroke-width: 2.4;
 }
 
 .send-btn:disabled {
@@ -2324,8 +2383,6 @@ textarea {
 
 .mobile-chat-topbar,
 .mobile-menu-panel,
-.mobile-compose-tool,
-.mobile-bot-avatar-image,
 .mobile-call-screen {
   display: none;
 }
@@ -3021,6 +3078,9 @@ textarea {
     font-size: 24px;
     line-height: 1.35;
     backdrop-filter: blur(12px);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .mobile-call-controls {
@@ -3085,6 +3145,95 @@ textarea {
 
   .mobile-end-call svg path {
     fill: currentColor;
+  }
+
+  @media (max-height: 760px) {
+    .mobile-call-screen {
+      padding: calc(54px + env(safe-area-inset-top)) 24px calc(16px + env(safe-area-inset-bottom));
+    }
+
+    .mobile-call-back {
+      top: calc(54px + env(safe-area-inset-top));
+      width: 48px;
+      height: 48px;
+    }
+
+    .mobile-call-body {
+      justify-content: flex-start;
+    }
+
+    .mobile-call-hero {
+      grid-template-columns: 1fr 128px 1fr;
+    }
+
+    .mobile-call-avatar {
+      width: 128px;
+      height: 128px;
+    }
+
+    .mobile-wave span {
+      width: 3px;
+    }
+
+    .mobile-call-name {
+      margin-top: 22px;
+      font-size: 36px;
+    }
+
+    .mobile-call-state {
+      margin-top: 10px;
+      font-size: 16px;
+      letter-spacing: 0.24em;
+    }
+
+    .mobile-call-time {
+      margin-top: 12px;
+      font-size: 17px;
+    }
+
+    .mobile-live-title {
+      margin-top: 24px;
+      font-size: 15px;
+    }
+
+    .mobile-live-text {
+      min-height: 48px;
+      max-height: 58px;
+      margin-top: 12px;
+      padding: 11px 16px;
+      border-radius: 22px;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+
+    .mobile-call-controls {
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .mobile-call-tool {
+      gap: 8px;
+    }
+
+    .mobile-call-tool svg {
+      width: 64px;
+      height: 64px;
+      padding: 17px;
+    }
+
+    .mobile-call-tool span {
+      font-size: 14px;
+    }
+
+    .mobile-end-call {
+      width: 80px;
+      height: 80px;
+    }
+
+    .mobile-end-call svg {
+      width: 38px;
+      height: 38px;
+    }
   }
 
   @keyframes mobileWave {
