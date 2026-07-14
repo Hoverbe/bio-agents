@@ -1554,7 +1554,7 @@ textarea {
   padding: 12px 24px;
   border-radius: 16px;
   border: none;
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  background: linear-gradient(135deg, #2563eb, #680b0b);
   color: #ffffff;
   font-size: 15px;
   font-weight: 600;
@@ -1712,7 +1712,7 @@ textarea {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  background: linear-gradient(135deg, #2563eb, #bc0d3f);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1760,7 +1760,7 @@ textarea {
   width: 100%;
   padding: 12px 16px;
   border-radius: 14px;
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  background: linear-gradient(135deg, #2563eb, #ca0970);
   border: none;
   color: white;
   font-size: 14px;
@@ -1954,7 +1954,7 @@ textarea {
 }
 
 .user-avatar {
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  background: linear-gradient(135deg, #2563eb, #9066da);
   color: white;
   font-size: 14px;
   font-weight: 600;
