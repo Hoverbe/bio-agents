@@ -52,7 +52,7 @@ AUTOMATION_AGENT_PROMPT = """
 
 ### web_search 工具调用格式
 当你需要联网搜索最新/实时信息时，请使用以下格式：
-`[TOOL_CALL:web_search:query=搜索关键词,limit=5,sources=bing]`
+`[TOOL_CALL:web_search:query=搜索关键词,limit=5,search_depth=basic,topic=general]`
 
 ### terminal 工具调用格式
 当你需要使用 terminal 工具时，请使用以下格式：
@@ -76,8 +76,8 @@ AUTOMATION_AGENT_PROMPT = """
 ### 使用示例
 
 ### web_search 工具示例
-1. 搜索今天台风消息：`[TOOL_CALL:web_search:query=今天 台风 最新消息,limit=5,sources=bing]`
-2. 搜索最新政策：`[TOOL_CALL:web_search:query=最新 生物医药 政策,limit=5,sources=bing]`
+1. 搜索今天台风消息：`[TOOL_CALL:web_search:query=今天 台风 最新消息,limit=5,topic=news]`
+2. 搜索最新政策：`[TOOL_CALL:web_search:query=最新 生物医药 政策,limit=5,search_depth=basic]`
 
 ### terminal 工具示例
 1. 查看文件列表：`[TOOL_CALL:terminal:command=ls -la,action=run]`

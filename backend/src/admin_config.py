@@ -29,7 +29,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
         {
             "name": "web_search",
-            "description": "联网搜索公开网页信息，返回标题、摘要、链接和来源",
+            "description": "使用 Tavily 联网搜索公开网页信息，返回标题、摘要、链接和相关性分数",
             "type": "builtin",
             "enabled": True,
             "config": {"timeout": 10},
