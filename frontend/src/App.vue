@@ -80,7 +80,7 @@
             </div>
           </div>
 
-          <h2 class="mobile-call-name">小衍</h2>
+          <h2 class="mobile-call-name">一阳生-BioAgent</h2>
           <div class="mobile-call-state">✧ {{ mobileVoiceStatus }} ✧</div>
           <div class="mobile-call-time">{{ voiceElapsedLabel }}</div>
 
@@ -184,7 +184,21 @@
 
       <template v-else>
       <!-- 中间：聊天内容 -->
-      <section class="panel panel-chat">
+      <section
+        :class="['panel', 'panel-chat', { 'is-dragging-file': isAttachmentDragActive }]"
+        @dragenter.prevent="handleAttachmentDragEnter"
+        @dragover.prevent="handleAttachmentDragOver"
+        @dragleave.prevent="handleAttachmentDragLeave"
+        @drop.prevent="handleAttachmentDrop"
+      >
+        <div v-if="isAttachmentDragActive" class="attachment-drop-overlay">
+          <div class="attachment-drop-panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v12m0-12 4 4m-4-4-4 4M5 15v3a3 3 0 0 0 3 3h8a3 3 0 0 0 3-3v-3" />
+            </svg>
+            <span>松开以上传附件</span>
+          </div>
+        </div>
         <header class="mobile-chat-topbar">
           <button class="mobile-icon-btn" type="button" aria-label="Back" @click="handleLogout">
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -288,26 +302,68 @@
 
         <!-- 输入框 -->
         <form class="chat-input-form" @submit.prevent="handleSend">
-          <button class="mobile-compose-tool" type="button" aria-label="Attach file">
+          <input
+            ref="fileInput"
+            class="attachment-input"
+            type="file"
+            accept=".pdf,.txt,.md,.markdown,.doc,.docx,.xls,.xlsx,.csv,.json,.fasta,.fa,.gb,.genbank"
+            @change="handleAttachmentChange"
+          />
+          <button
+            :class="['mobile-compose-tool', { 'is-active': selectedAttachment }]"
+            type="button"
+            aria-label="上传附件"
+            :disabled="loading || attachmentStatus === 'uploading'"
+            @click="openFilePicker"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M21 11.5l-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-2.8-2.8l8.5-8.5" />
             </svg>
           </button>
-          <div class="input-wrapper">
-            <textarea
-              v-model="inputMessage"
-              :placeholder="chatInputPlaceholder"
-              rows="2"
-              :disabled="loading"
-              @keydown.enter.exact.prevent="handleSend"
-            ></textarea>
+          <div class="composer-main">
+            <div v-if="selectedAttachment || attachmentStatus === 'uploading'" class="attachment-chip">
+              <span class="attachment-dot"></span>
+              <span class="attachment-name">{{ selectedAttachment?.filename || "附件解析中" }}</span>
+              <span class="attachment-meta">{{ attachmentStatusText }}</span>
+              <button type="button" class="attachment-remove" aria-label="移除附件" @click="removeAttachment">
+                ×
+              </button>
+            </div>
+            <p v-if="attachmentError" class="attachment-error">{{ attachmentError }}</p>
+            <div class="input-wrapper">
+              <textarea
+                ref="messageInput"
+                v-model="inputMessage"
+                :placeholder="chatInputPlaceholder"
+                rows="2"
+                :disabled="loading"
+                @keydown.enter.exact.prevent="handleSend"
+              ></textarea>
+              <div v-if="emojiPickerOpen" class="emoji-picker" role="menu" aria-label="Emoji">
+                <button
+                  v-for="emoji in emojiList"
+                  :key="emoji"
+                  type="button"
+                  class="emoji-option"
+                  @click="insertEmoji(emoji)"
+                >
+                  {{ emoji }}
+                </button>
+              </div>
+            </div>
           </div>
-          <button class="mobile-compose-tool" type="button" aria-label="Emoji">
+          <button
+            :class="['mobile-compose-tool', { 'is-active': emojiPickerOpen }]"
+            type="button"
+            aria-label="Emoji"
+            :disabled="loading"
+            @click="toggleEmojiPicker"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8.5 10h.01M15.5 10h.01M8 14c1.1 1.3 2.4 2 4 2s2.9-.7 4-2" />
             </svg>
           </button>
-          <button class="send-btn" type="submit" :disabled="loading || !inputMessage.trim()">
+          <button class="send-btn" type="submit" :disabled="loading || attachmentStatus === 'uploading' || !canSend">
             <svg viewBox="0 0 24 24" width="20" height="20">
               <path d="M22 2L11 13l3 5H2l8-10 2 2v8z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
@@ -361,7 +417,15 @@
 
 <script lang="ts" setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from "vue";
-import { getConversationHistory, getVoiceWsUrl, isVoiceWsSecure, runResearchStream, type ConversationRecord } from "./services/api";
+import {
+  getConversationHistory,
+  getVoiceWsUrl,
+  isVoiceWsSecure,
+  parseAttachmentFile,
+  runResearchStream,
+  type ConversationRecord,
+  type ParsedAttachment
+} from "./services/api";
 import AdminPanel from "./components/AdminPanel.vue";
 import agentProfileImage from "./assets/bio-agent-profile-chun.png";
 
@@ -401,6 +465,13 @@ const currentView = ref<"chat" | "admin">("chat");
 const chatHistory = ref<Chat[]>([]);
 const currentChatIndex = ref(-1);
 const inputMessage = ref("");
+const fileInput = ref<HTMLInputElement | null>(null);
+const messageInput = ref<HTMLTextAreaElement | null>(null);
+const selectedAttachment = ref<ParsedAttachment | null>(null);
+const attachmentStatus = ref<"idle" | "uploading" | "ready" | "error">("idle");
+const attachmentError = ref("");
+const isAttachmentDragActive = ref(false);
+const emojiPickerOpen = ref(false);
 const isMobileViewport = ref(false);
 const mobileMenuOpen = ref(false);
 const mobileCallVisible = ref(false);
@@ -444,6 +515,7 @@ let audioPlaybackUnlocked = false;
 let speechStartSent = false;
 let closingVoiceCall = false;
 let speechCandidateSince = 0;
+let attachmentDragDepth = 0;
 
 const vadThreshold = 0.015;
 const vadStartDelay = 160;
@@ -463,6 +535,28 @@ const currentChat = computed(() => {
 });
 
 const currentMessages = computed(() => currentChat.value?.messages || []);
+
+const emojiList = [
+  "😀", "😄", "😊", "😂", "😍", "🥰", "😎", "🤔",
+  "👍", "👏", "🙏", "💪", "🔥", "✨", "🎉", "✅",
+  "❤️", "💡", "📎", "🧬", "🔬", "🧪", "📊", "📝"
+];
+
+const attachmentStatusText = computed(() => {
+  if (attachmentStatus.value === "uploading") return "解析中";
+  if (attachmentStatus.value === "ready" && selectedAttachment.value) {
+    const sizeText = formatBytes(selectedAttachment.value.size || 0);
+    return selectedAttachment.value.truncated ? `${sizeText} · 已截断` : sizeText;
+  }
+  if (attachmentStatus.value === "error") return "解析失败";
+  return "";
+});
+
+const canSend = computed(() => {
+  const hasMessage = inputMessage.value.trim().length > 0;
+  const hasReadyAttachment = attachmentStatus.value === "ready" && !!selectedAttachment.value;
+  return hasMessage || hasReadyAttachment;
+});
 
 const currentChatTitle = computed(() => {
   if (!currentChat.value) return "新对话";
@@ -492,6 +586,108 @@ const mobileTranscript = computed(() => {
   const lastAssistant = [...currentMessages.value].reverse().find((message) => !message.isUser);
   return currentBotVoiceMessage?.content || lastAssistant?.content || "等待你开始说话";
 });
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return "已解析";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function openFilePicker() {
+  attachmentError.value = "";
+  fileInput.value?.click();
+}
+
+async function handleAttachmentChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  await uploadAttachmentFile(file);
+  input.value = "";
+}
+
+async function uploadAttachmentFile(file: File) {
+  if (loading.value || attachmentStatus.value === "uploading") return;
+
+  attachmentStatus.value = "uploading";
+  attachmentError.value = "";
+  emojiPickerOpen.value = false;
+  selectedAttachment.value = {
+    filename: file.name,
+    content: "",
+    content_type: file.type || null,
+    size: file.size,
+    chars: 0,
+    truncated: false
+  };
+
+  try {
+    selectedAttachment.value = await parseAttachmentFile(file);
+    attachmentStatus.value = "ready";
+  } catch (err) {
+    selectedAttachment.value = null;
+    attachmentStatus.value = "error";
+    attachmentError.value = err instanceof Error ? err.message : "附件解析失败";
+  }
+}
+
+function eventHasFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types || []).includes("Files");
+}
+
+function handleAttachmentDragEnter(event: DragEvent) {
+  if (!eventHasFiles(event) || loading.value) return;
+  attachmentDragDepth += 1;
+  isAttachmentDragActive.value = true;
+}
+
+function handleAttachmentDragOver(event: DragEvent) {
+  if (!eventHasFiles(event) || loading.value) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  isAttachmentDragActive.value = true;
+}
+
+function handleAttachmentDragLeave(event: DragEvent) {
+  if (!eventHasFiles(event)) return;
+  attachmentDragDepth = Math.max(attachmentDragDepth - 1, 0);
+  if (attachmentDragDepth === 0) {
+    isAttachmentDragActive.value = false;
+  }
+}
+
+async function handleAttachmentDrop(event: DragEvent) {
+  attachmentDragDepth = 0;
+  isAttachmentDragActive.value = false;
+  const file = event.dataTransfer?.files?.[0];
+  if (!file || loading.value || attachmentStatus.value === "uploading") return;
+  await uploadAttachmentFile(file);
+}
+
+function removeAttachment() {
+  selectedAttachment.value = null;
+  attachmentStatus.value = "idle";
+  attachmentError.value = "";
+  if (fileInput.value) fileInput.value.value = "";
+}
+
+function toggleEmojiPicker() {
+  emojiPickerOpen.value = !emojiPickerOpen.value;
+}
+
+function insertEmoji(emoji: string) {
+  const textarea = messageInput.value;
+  const start = textarea?.selectionStart ?? inputMessage.value.length;
+  const end = textarea?.selectionEnd ?? inputMessage.value.length;
+  inputMessage.value = `${inputMessage.value.slice(0, start)}${emoji}${inputMessage.value.slice(end)}`;
+  emojiPickerOpen.value = false;
+
+  nextTick(() => {
+    messageInput.value?.focus();
+    const caret = start + emoji.length;
+    messageInput.value?.setSelectionRange(caret, caret);
+  });
+}
 
 // 获取格式化时间
 function getTimeString(): string {
@@ -575,6 +771,9 @@ function handleLogout() {
   chatHistory.value = [];
   currentChatIndex.value = -1;
   taskList.value = [];
+  inputMessage.value = "";
+  removeAttachment();
+  emojiPickerOpen.value = false;
 }
 
 // 开始新对话
@@ -590,6 +789,8 @@ function startNewChat() {
   chatHistory.value.unshift(newChat);
   currentChatIndex.value = 0;
   inputMessage.value = "";
+  removeAttachment();
+  emojiPickerOpen.value = false;
   taskList.value = [];
   
   nextTick(() => {
@@ -603,6 +804,8 @@ function switchChat(index: number) {
   currentView.value = "chat";
   currentChatIndex.value = index;
   inputMessage.value = "";
+  removeAttachment();
+  emojiPickerOpen.value = false;
   taskList.value = [];
 
   nextTick(() => {
@@ -1041,12 +1244,18 @@ onBeforeUnmount(() => {
 
 // 发送消息
 async function handleSend() {
-  if (!inputMessage.value.trim() || loading.value || !currentChat.value) {
+  if (!canSend.value || loading.value || attachmentStatus.value === "uploading" || !currentChat.value) {
     return;
   }
 
+  const text = inputMessage.value.trim() || "请根据附件内容进行分析。";
+  const attachment = selectedAttachment.value;
+  const displayContent = attachment
+    ? `${text}\n\n附件：${attachment.filename}${attachment.truncated ? "（内容已截断）" : ""}`
+    : text;
+
   const userMessage: Message = {
-    content: inputMessage.value.trim(),
+    content: displayContent,
     isUser: true,
     timestamp: getTimeString()
   };
@@ -1054,12 +1263,13 @@ async function handleSend() {
   currentChat.value.messages.push(userMessage);
   
   if (currentChat.value.messages.length === 1) {
-    currentChat.value.title = inputMessage.value.trim().slice(0, 20) + (inputMessage.value.length > 20 ? "..." : "");
+    currentChat.value.title = text.slice(0, 20) + (text.length > 20 ? "..." : "");
   }
-  currentChat.value.lastMessage = inputMessage.value.trim().slice(0, 30) + (inputMessage.value.length > 30 ? "..." : "");
+  currentChat.value.lastMessage = displayContent.slice(0, 30) + (displayContent.length > 30 ? "..." : "");
   currentChat.value.timestamp = getDateString();
 
   inputMessage.value = "";
+  emojiPickerOpen.value = false;
   loading.value = true;
   taskList.value = [];
 
@@ -1074,11 +1284,24 @@ async function handleSend() {
     }));
     
     await runResearchStream(
-      { username: username.value, topic: userMessage.content, history },
+      {
+        username: username.value,
+        topic: text,
+        history,
+        attachments: attachment
+          ? [{
+              filename: attachment.filename,
+              content: attachment.content,
+              content_type: attachment.content_type,
+              truncated: attachment.truncated
+            }]
+          : undefined
+      },
       (event) => {
         handleStreamEvent(event);
       }
     );
+    if (attachment) removeAttachment();
   } catch (err) {
     const errorMessage: Message = {
       content: err instanceof Error ? err.message : "发送消息失败，请重试",
@@ -1440,6 +1663,49 @@ watch(chatHistory, () => {
   flex-direction: column;
   padding: 0;
   border-radius: 0;
+}
+
+.panel-chat.is-dragging-file {
+  outline: 2px solid rgba(37, 99, 235, 0.32);
+  outline-offset: -2px;
+}
+
+.attachment-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: rgba(248, 250, 252, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.attachment-drop-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #1d4ed8;
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+}
+
+.attachment-drop-panel svg {
+  width: 24px;
+  height: 24px;
+}
+
+.attachment-drop-panel svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .panel::before {
@@ -2050,17 +2316,85 @@ textarea {
 
 /* 输入框 */
 .chat-input-form {
+  position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   padding: 14px 24px;
   border-top: 1px solid rgba(148, 163, 184, 0.2);
   background: rgba(255, 255, 255, 0.96);
 }
 
-.input-wrapper {
+.attachment-input {
+  display: none;
+}
+
+.composer-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-wrapper {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.attachment-chip {
+  width: fit-content;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  border-radius: 8px;
+  background: rgba(239, 246, 255, 0.92);
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.attachment-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2563eb;
+  flex: 0 0 auto;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-meta {
+  color: #64748b;
+  flex: 0 0 auto;
+}
+
+.attachment-remove {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.08);
+  color: #475569;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.attachment-error {
+  margin: 0;
+  color: #dc2626;
+  font-size: 12px;
 }
 
 .chat-input-form textarea {
@@ -2087,6 +2421,49 @@ textarea {
   place-items: center;
   flex: 0 0 auto;
   cursor: pointer;
+}
+
+.mobile-compose-tool.is-active {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.mobile-compose-tool:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.emoji-picker {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 8;
+  width: 288px;
+  max-width: calc(100vw - 32px);
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.14);
+}
+
+.emoji-option {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.emoji-option:hover {
+  background: rgba(226, 232, 240, 0.8);
 }
 
 .mobile-compose-tool svg {
@@ -2871,12 +3248,21 @@ textarea {
   }
 
   .chat-input-form {
-    align-items: center;
+    align-items: flex-end;
     gap: 8px;
     padding: 10px 14px calc(18px + env(safe-area-inset-bottom));
     border-top: 0;
     background: rgba(247, 250, 253, 0.82);
     backdrop-filter: blur(14px);
+  }
+
+  .composer-main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .attachment-chip {
+    max-width: calc(100vw - 132px);
   }
 
   .chat-input-form .input-wrapper {
@@ -2911,6 +3297,12 @@ textarea {
     display: grid;
     place-items: center;
     flex: 0 0 auto;
+  }
+
+  .emoji-picker {
+    right: -52px;
+    grid-template-columns: repeat(6, 1fr);
+    width: 228px;
   }
 
   .send-btn {

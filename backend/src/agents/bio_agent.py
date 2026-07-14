@@ -530,28 +530,37 @@ class BioAgent:
         logger.info(f"🔍 收到用户请求: {query[:50]}..." if len(query) > 50 else f"🔍 收到用户请求: {query}")
         
         try:
+            attachment_context = (file_context or "").strip()
+            effective_query = query
+            if attachment_context:
+                effective_query = (
+                    f"{query}\n\n"
+                    "Uploaded attachment context for this turn:\n"
+                    f"{attachment_context}"
+                )
+
             # 0. 查询分类：简单问题直接走 knowledge_agent，复杂任务才分发给 master_agent
-            query_type = self._classify_query(query)
+            query_type = self._classify_query(effective_query)
             if query_type == "simple":
                 logger.info("🟢 识别为简单问题，直接使用知识问答Agent回答")
-                return self._execute_knowledge_task(query)[0]
+                return self._execute_knowledge_task(effective_query)[0]
 
             # 1. 使用主控Agent进行任务分解（仅复杂任务）
             logger.info("🔴 识别为复杂任务，进入主控Agent任务分解")
             master_prompt = MASTER_AGENT_PROMPT.format(
                 current_date=datetime.now().strftime("%Y-%m-%d"),
-                user_request=query,
+                user_request=effective_query,
                 conversation_history="无"
             )
             self.master_agent.system_prompt = master_prompt
             
-            master_response = self.master_agent.run(input_text=query)
+            master_response = self.master_agent.run(input_text=effective_query)
             tasks = self._parse_master_response(master_response)
             
             if not tasks:
                 # 如果解析失败，回退到 knowledge_agent 直接回答
                 logger.info("⚠️ 主控Agent未返回有效任务列表，回退到知识问答Agent直接回答")
-                return self._execute_knowledge_task(query)[0]
+                return self._execute_knowledge_task(effective_query)[0]
             
             logger.info(f"📋 主控Agent分解出 {len(tasks)} 个任务")
             
@@ -617,7 +626,13 @@ class BioAgent:
             logger.error(f"❌ 请求处理失败: {str(e)}", exc_info=True)
             return f"处理请求时发生错误: {str(e)}"
 
-    def run_research_stream(self, username: str, query: str, history: Optional[List[Dict[str, str]]] = None) -> Iterator[Dict[str, Any]]:
+    def run_research_stream(
+        self,
+        username: str,
+        query: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        file_context: Optional[str] = None,
+    ) -> Iterator[Dict[str, Any]]:
         """
         流式执行研究任务，支持任务清单实时更新和群聊效果
 
@@ -630,13 +645,27 @@ class BioAgent:
             Dict[str, Any]: 事件字典，包含任务状态更新和消息
         """
         try:
+            attachment_context = (file_context or "").strip()
+            effective_query = query
+            if attachment_context:
+                effective_query = (
+                    f"{query}\n\n"
+                    "Uploaded attachment context for this turn:\n"
+                    f"{attachment_context}"
+                )
             logger.info(f"🔍 用户 {username} 发起研究请求: {query[:50]}...")
 
             # 格式化对话历史
             history_str = self._format_history(history or [])
+            if attachment_context:
+                history_str = (
+                    f"{history_str}\n\n"
+                    "Uploaded attachment context for this turn:\n"
+                    f"{attachment_context}"
+                )
 
             # 0. 查询分类：简单问题直接走 knowledge_agent，复杂任务才分发给 master_agent
-            query_type = self._classify_query(query)
+            query_type = self._classify_query(effective_query)
             if query_type == "simple":
                 logger.info("🟢 识别为简单问题，直接使用知识问答Agent流式回答")
                 yield {
@@ -645,7 +674,7 @@ class BioAgent:
                     'agent': 'knowledge_agent',
                     'agent_name': '知识问答专家'
                 }
-                for chunk in self._execute_knowledge_task_stream(query, conversation_history=history_str):
+                for chunk in self._execute_knowledge_task_stream(effective_query, conversation_history=history_str):
                     yield {
                         'type': 'message_chunk',
                         'agent': 'knowledge_agent',
@@ -670,7 +699,7 @@ class BioAgent:
             in_task_list_section = False
             buffer = ""
             
-            for chunk in self.master_agent.stream_run(input_text=query):
+            for chunk in self.master_agent.stream_run(input_text=effective_query):
                 master_response += chunk
                 
                 if not in_task_list_section:
@@ -762,7 +791,7 @@ class BioAgent:
                 }
 
                 # 使用流式方法执行知识问答
-                for chunk in self._execute_knowledge_task_stream(query, conversation_history=history_str):
+                for chunk in self._execute_knowledge_task_stream(effective_query, conversation_history=history_str):
                     yield {
                         'type': 'message_chunk',
                         'agent': 'knowledge_agent',
@@ -1124,6 +1153,14 @@ class BioAgent:
     def add_rag_upload(self, file: Any, namespace: str = "default") -> int:
         """添加上传文件到 RAG 知识库。"""
         return self.rag_service.add_upload(file=file, namespace=namespace)
+
+    def parse_upload(self, file: Any) -> str:
+        """Parse an uploaded file without indexing it into the RAG store."""
+        filename = file.filename or "attachment.txt"
+        suffix = Path(filename).suffix.lower() or ".txt"
+        if hasattr(file.file, "seek"):
+            file.file.seek(0)
+        return self.rag_service._load_upload(file=file, suffix=suffix)
 
     def list_rag_documents(self, namespace: str = "default") -> List[Dict[str, Any]]:
         """列出 RAG 文档。"""

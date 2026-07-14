@@ -20,6 +20,19 @@ export interface ResearchRequest {
   topic: string;
   search_api?: string;
   history?: Array<{ role: string; content: string }>;
+  attachments?: ResearchAttachment[];
+}
+
+export interface ResearchAttachment {
+  filename: string;
+  content: string;
+  content_type?: string | null;
+  truncated?: boolean;
+}
+
+export interface ParsedAttachment extends ResearchAttachment {
+  size?: number | null;
+  chars: number;
 }
 
 export interface ResearchStreamEvent {
@@ -99,6 +112,22 @@ export function getRAGDocuments(namespace = "default"): Promise<any> {
 
 export function uploadRAGDocument(formData: FormData): Promise<any> {
   return fetch(`${baseURL}/admin/rag/upload`, {
+    method: "POST",
+    body: formData
+  }).then(async (response) => {
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(errorText || `请求失败，状态码：${response.status}`);
+    }
+    return response.json();
+  });
+}
+
+export function parseAttachmentFile(file: File): Promise<ParsedAttachment> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return fetch(`${baseURL}/attachments/parse`, {
     method: "POST",
     body: formData
   }).then(async (response) => {

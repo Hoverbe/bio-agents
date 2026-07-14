@@ -72,6 +72,30 @@ class ResearchRequest(BaseModel):
         default=None,
         description="Conversation history as a list of {'role': ..., 'content': ...}"
     )
+    attachments: Optional[List["ResearchAttachment"]] = Field(
+        default=None,
+        description="Parsed upload attachments included with this turn"
+    )
+
+
+class ResearchAttachment(BaseModel):
+    """Parsed attachment content sent with a research turn."""
+
+    filename: str = Field(default="attachment", description="Original uploaded filename")
+    content: str = Field(default="", description="Extracted text content")
+    content_type: Optional[str] = Field(default=None, description="Uploaded file MIME type")
+    truncated: bool = Field(default=False, description="Whether extracted content was truncated")
+
+
+class AttachmentParseResponse(BaseModel):
+    """Response for a parsed chat attachment upload."""
+
+    filename: str
+    content: str
+    content_type: Optional[str] = None
+    size: Optional[int] = None
+    chars: int
+    truncated: bool = False
 
 
 class RAGTextRequest(BaseModel):
@@ -139,6 +163,28 @@ class ResearchResponse(BaseModel):
         default_factory=list,
         description="Structured TODO items with summaries and sources",
     )
+
+
+MAX_ATTACHMENT_CONTEXT_CHARS = 120_000
+
+
+def format_attachment_context(attachments: Optional[List[ResearchAttachment]]) -> str:
+    if not attachments:
+        return ""
+
+    parts: List[str] = []
+    for index, attachment in enumerate(attachments, start=1):
+        content = (attachment.content or "").strip()
+        if not content:
+            continue
+
+        truncated_note = " (truncated)" if attachment.truncated else ""
+        parts.append(
+            f"Attachment {index}: {attachment.filename}{truncated_note}\n"
+            f"{content[:MAX_ATTACHMENT_CONTEXT_CHARS]}"
+        )
+
+    return "\n\n".join(parts)
 
 
 def create_app() -> FastAPI:
@@ -316,6 +362,33 @@ def create_app() -> FastAPI:
             logger.exception("Conversation history lookup failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    @app.post("/attachments/parse", response_model=AttachmentParseResponse)
+    def parse_chat_attachment(file: UploadFile = File(...)) -> AttachmentParseResponse:
+        try:
+            size = getattr(file, "size", None)
+            if size is None and hasattr(file.file, "seek") and hasattr(file.file, "tell"):
+                current_position = file.file.tell()
+                file.file.seek(0, 2)
+                size = file.file.tell()
+                file.file.seek(current_position)
+
+            content = (app.state.bio_agent.parse_upload(file=file) or "").strip()
+            truncated = len(content) > MAX_ATTACHMENT_CONTEXT_CHARS
+            if truncated:
+                content = content[:MAX_ATTACHMENT_CONTEXT_CHARS]
+
+            return AttachmentParseResponse(
+                filename=file.filename or "attachment",
+                content=content,
+                content_type=file.content_type,
+                size=size,
+                chars=len(content),
+                truncated=truncated,
+            )
+        except Exception as exc:
+            logger.exception("Attachment parsing failed")
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @app.post("/chat", response_model=ChatResponse)
     def chat(payload: ChatRequest) -> ChatResponse:
         try:
@@ -387,8 +460,14 @@ def create_app() -> FastAPI:
         def event_iterator() -> Iterator[str]:
             response_parts: List[str] = []
             status = "success"
+            file_context = format_attachment_context(payload.attachments)
             try:
-                for event in app.state.bio_agent.run_research_stream(payload.username, payload.topic, payload.history):
+                for event in app.state.bio_agent.run_research_stream(
+                    payload.username,
+                    payload.topic,
+                    payload.history,
+                    file_context=file_context,
+                ):
                     event_type = event.get("type")
                     content = event.get("content")
                     if event_type in {"message", "message_chunk"} and content:

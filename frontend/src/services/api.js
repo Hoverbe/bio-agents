@@ -64,6 +64,20 @@ export function uploadRAGDocument(formData) {
         return response.json();
     });
 }
+export function parseAttachmentFile(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+    return fetch(`${baseURL}/attachments/parse`, {
+        method: "POST",
+        body: formData
+    }).then(async (response) => {
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => "");
+            throw new Error(errorText || `请求失败，状态码：${response.status}`);
+        }
+        return response.json();
+    });
+}
 export function startRAGDocument(source, namespace = "default") {
     const formData = new FormData();
     formData.append("source", source);
