@@ -189,7 +189,7 @@ class MySQLStore:
                     FROM conversations c
                     INNER JOIN users u ON u.id = c.user_id
                     WHERE u.username = %s
-                    ORDER BY c.created_at ASC, c.id ASC
+                    ORDER BY c.created_at DESC, c.id DESC
                     LIMIT %s
                     """,
                     (clean_username, limit),

@@ -301,7 +301,10 @@
         </div>
 
         <!-- 输入框 -->
-        <form class="chat-input-form" @submit.prevent="handleSend">
+        <form
+          :class="['chat-input-form', { 'has-attachment': selectedAttachment || attachmentStatus === 'uploading' || attachmentError }]"
+          @submit.prevent="handleSend"
+        >
           <input
             ref="fileInput"
             class="attachment-input"
@@ -1498,13 +1501,7 @@ function recordToChat(record: ConversationRecord): Chat {
 }
 
 function mergeConversationRecords(records: ConversationRecord[]): Chat[] {
-  const latestFullHistory = [...records]
-    .reverse()
-    .find((record) => Array.isArray(record.history_json) && record.history_json.length > 0);
-  if (latestFullHistory) {
-    return [recordToChat(latestFullHistory)];
-  }
-  return records.map(recordToChat).reverse();
+  return records.map(recordToChat);
 }
 
 // 加载聊天历史
@@ -2318,11 +2315,15 @@ textarea {
 .chat-input-form {
   position: relative;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
   padding: 14px 24px;
   border-top: 1px solid rgba(148, 163, 184, 0.2);
   background: rgba(255, 255, 255, 0.96);
+}
+
+.chat-input-form.has-attachment {
+  align-items: flex-end;
 }
 
 .attachment-input {
@@ -3248,12 +3249,16 @@ textarea {
   }
 
   .chat-input-form {
-    align-items: flex-end;
+    align-items: center;
     gap: 8px;
     padding: 10px 14px calc(18px + env(safe-area-inset-bottom));
     border-top: 0;
     background: rgba(247, 250, 253, 0.82);
     backdrop-filter: blur(14px);
+  }
+
+  .chat-input-form.has-attachment {
+    align-items: flex-end;
   }
 
   .composer-main {
