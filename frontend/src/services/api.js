@@ -46,6 +46,15 @@ export function saveSkillConfig(payload) {
 export function deleteSkillConfig(name) {
     return requestJSON(`/admin/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
+export function saveModelConfig(payload) {
+    return requestJSON("/admin/models", { method: "POST", body: JSON.stringify(payload) });
+}
+export function activateModelConfig(name) {
+    return requestJSON("/admin/models/active", { method: "POST", body: JSON.stringify({ name }) });
+}
+export function deleteModelConfig(name) {
+    return requestJSON(`/admin/models/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
 export function saveRAGConfig(payload) {
     return requestJSON("/admin/rag", { method: "POST", body: JSON.stringify(payload) });
 }

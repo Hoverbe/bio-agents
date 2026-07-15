@@ -102,6 +102,18 @@ export function deleteSkillConfig(name: string): Promise<any> {
   return requestJSON(`/admin/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
+export function saveModelConfig(payload: any): Promise<any> {
+  return requestJSON("/admin/models", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function activateModelConfig(name: string): Promise<any> {
+  return requestJSON("/admin/models/active", { method: "POST", body: JSON.stringify({ name }) });
+}
+
+export function deleteModelConfig(name: string): Promise<any> {
+  return requestJSON(`/admin/models/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
 export function saveRAGConfig(payload: any): Promise<any> {
   return requestJSON("/admin/rag", { method: "POST", body: JSON.stringify(payload) });
 }

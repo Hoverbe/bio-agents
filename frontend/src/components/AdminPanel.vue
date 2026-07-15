@@ -66,6 +66,11 @@
           <small>{{ enabledCount(skills) }} 个已启用</small>
         </article>
         <article class="metric-card">
+          <span>当前模型</span>
+          <strong class="model-metric">{{ modelInfo.model_name || "未配置" }}</strong>
+          <small>{{ modelInfo.provider || "auto" }} · {{ modelConfigs.length }} 个配置</small>
+        </article>
+        <article class="metric-card">
           <span>RAG 知识块</span>
           <strong>{{ ragStats.total_chunks || 0 }}</strong>
           <small>{{ ragForm.enabled ? "检索已启用" : "检索已禁用" }}</small>
@@ -162,6 +167,61 @@
         </article>
       </section>
 
+      <section v-show="activeSection === 'models'" class="content-grid two-column">
+        <article class="admin-card editor-card">
+          <header><div><h3>模型管理</h3><p>配置 OpenAI 兼容模型服务，保存后会立即切换当前模型。</p></div></header>
+          <div class="model-current">
+            <div>
+              <span>当前模型</span>
+              <strong>{{ modelInfo.model_name || "未配置" }}</strong>
+              <p>{{ modelInfo.base_url || "暂无服务地址" }}</p>
+            </div>
+            <div>
+              <span>Provider</span>
+              <strong>{{ modelInfo.provider || "auto" }}</strong>
+              <p>API Key：{{ modelInfo.has_api_key ? modelInfo.api_key_mask : "未配置" }}</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <label><span>Model Name</span><input v-model="modelForm.model_name" placeholder="如 gpt-4o-mini" autocomplete="off" /></label>
+            <label><span>URL</span><input v-model="modelForm.base_url" placeholder="如 https://api.openai.com/v1" autocomplete="off" /></label>
+            <label>
+              <span>API Key</span>
+              <input
+                v-model="modelForm.api_key"
+                type="password"
+                placeholder="留空则沿用已保存的 key"
+                autocomplete="new-password"
+              />
+            </label>
+            <small class="hint">页面不会回显完整 API Key；保存后只显示脱敏状态。</small>
+            <label class="check"><input v-model="modelForm.enabled" type="checkbox" /> 启用该模型配置</label>
+            <button class="primary" @click="saveModel">
+              {{ modelForm.enabled ? "保存并切换模型" : "保存模型配置" }}
+            </button>
+          </div>
+        </article>
+        <article class="admin-card list-card">
+          <header><div><h3>模型列表</h3><p>{{ modelConfigs.length }} 个全局模型配置，可快速切换</p></div></header>
+          <div class="model-list">
+            <div v-for="item in modelConfigs" :key="item.name" class="config-item">
+              <div class="config-meta">
+                <strong>{{ item.model_name || item.name }}</strong>
+                <p>{{ item.enabled === false ? "未启用" : "启用" }} · {{ item.base_url }} · Key {{ item.has_api_key ? item.api_key_mask : "未配置" }}</p>
+              </div>
+              <div class="row-actions">
+                <button :disabled="modelInfo.name === item.name" @click="activateModel(item.name)">
+                  {{ modelInfo.name === item.name ? "当前" : "切换" }}
+                </button>
+                <button @click="editModel(item)">编辑</button>
+                <button class="danger" @click="removeModel(item.name)">删除</button>
+              </div>
+            </div>
+            <div v-if="modelConfigs.length === 0" class="empty-list">暂无模型配置</div>
+          </div>
+        </article>
+      </section>
+
       <section v-show="activeSection === 'rag'" class="content-grid two-column">
         <article class="admin-card editor-card">
           <header><div><h3>RAG 检索配置</h3><p>设置全局默认知识库检索参数，并上传 PDF、TXT、Word、Excel、Markdown 等文本文件。</p></div></header>
@@ -205,6 +265,8 @@
 <script lang="ts" setup>
 import { computed, defineComponent, h, onMounted, ref } from "vue";
 import {
+  activateModelConfig,
+  deleteModelConfig,
   deleteMCPConfig,
   deleteRAGDocument,
   deleteSkillConfig,
@@ -212,6 +274,7 @@ import {
   getAdminConfig,
   getRAGDocuments,
   saveMCPConfig,
+  saveModelConfig,
   saveRAGConfig,
   saveSkillConfig,
   saveToolConfig,
@@ -250,6 +313,7 @@ const navItems = [
   { key: "mcp", label: "MCP 管理", icon: "M", desc: "服务连接", headline: "管理所有用户共享的 MCP 服务。" },
   { key: "tools", label: "Tool 管理", icon: "T", desc: "工具能力", headline: "配置系统可调用的全局工具。" },
   { key: "skills", label: "Skill 管理", icon: "S", desc: "流程模板", headline: "维护可复用的全局 Skill 流程。" },
+  { key: "models", label: "模型管理", icon: "AI", desc: "模型切换", headline: "查看当前模型并快速切换 OpenAI 兼容服务。" },
   { key: "rag", label: "RAG 管理", icon: "R", desc: "知识库", headline: "配置全局 RAG 检索行为。" }
 ];
 
@@ -262,6 +326,8 @@ const runtimeTools = ref<any[]>([]);
 const mcpConfigs = ref<any[]>([]);
 const toolConfigs = ref<any[]>([]);
 const skills = ref<any[]>([]);
+const modelInfo = ref<Record<string, any>>({});
+const modelConfigs = ref<any[]>([]);
 const ragStats = ref<Record<string, any>>({});
 const ragDocuments = ref<any[]>([]);
 const ragFile = ref<File | null>(null);
@@ -273,6 +339,7 @@ const mcpEnvText = ref("");
 const toolForm = ref({ name: "", description: "", type: "builtin", enabled: true });
 const toolConfigText = ref("{}");
 const skillForm = ref({ name: "", description: "", body: "", enabled: true });
+const modelForm = ref({ model_name: "", base_url: "", api_key: "", enabled: true });
 const ragForm = ref({ namespace: "default", top_k: 5, chunk_size: 900, chunk_overlap: 120, enabled: true });
 
 function enabledCount(items: any[]) {
@@ -293,6 +360,8 @@ async function loadConfig() {
     mcpConfigs.value = data.mcp_config || [];
     toolConfigs.value = data.tool_config || [];
     skills.value = data.skills || [];
+    modelInfo.value = data.model || {};
+    modelConfigs.value = data.model_config || [];
     ragStats.value = data.rag || {};
     ragForm.value = { namespace: "default", top_k: 5, chunk_size: 900, chunk_overlap: 120, enabled: true, ...(data.rag_config || {}) };
     await loadRAGDocuments();
@@ -366,6 +435,57 @@ async function removeSkill(name: string) {
   await deleteSkillConfig(name);
   show("Skill 已删除");
   await loadConfig();
+}
+
+async function saveModel() {
+  if (!modelForm.value.model_name.trim() || !modelForm.value.base_url.trim()) {
+    show("请填写 Model Name 和 URL");
+    return;
+  }
+  try {
+    await saveModelConfig({
+      ...modelForm.value,
+      model_name: modelForm.value.model_name.trim(),
+      base_url: modelForm.value.base_url.trim()
+    });
+    modelForm.value.api_key = "";
+    show(modelForm.value.enabled ? "模型配置已保存并切换" : "模型配置已保存");
+    await loadConfig();
+  } catch (error) {
+    show(error instanceof Error ? error.message : "模型配置保存失败");
+  }
+}
+
+function editModel(item: any) {
+  activeSection.value = "models";
+  modelForm.value = {
+    model_name: item.model_name || item.name || "",
+    base_url: item.base_url || "",
+    api_key: "",
+    enabled: item.enabled !== false
+  };
+}
+
+async function activateModel(name: string) {
+  if (!name) return;
+  try {
+    await activateModelConfig(name);
+    show("模型已切换");
+    await loadConfig();
+  } catch (error) {
+    show(error instanceof Error ? error.message : "模型切换失败");
+  }
+}
+
+async function removeModel(name: string) {
+  if (!name) return;
+  try {
+    await deleteModelConfig(name);
+    show("模型配置已删除");
+    await loadConfig();
+  } catch (error) {
+    show(error instanceof Error ? error.message : "模型配置删除失败");
+  }
 }
 
 async function saveRAG() {
@@ -442,10 +562,11 @@ onMounted(loadConfig);
 .status-pill.online { background: #dcfce7; color: #166534; }
 .status-pill.syncing { background: #fef3c7; color: #92400e; }
 .notice { margin: 0 0 16px; padding: 12px 14px; border-radius: 14px; background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
-.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 14px; margin-bottom: 18px; }
+.metric-grid { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: 14px; margin-bottom: 18px; }
 .metric-card { padding: 18px; border-radius: 20px; background: white; border: 1px solid #e2e8f0; box-shadow: 0 14px 32px rgba(15,23,42,.06); }
 .metric-card span { color: #64748b; font-size: 13px; }
 .metric-card strong { display: block; margin: 8px 0 4px; font-size: 30px; }
+.metric-card .model-metric { font-size: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .metric-card small { color: #94a3b8; }
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, .8fr); gap: 16px; }
 .content-grid.two-column { grid-template-columns: minmax(360px, .95fr) minmax(360px, 1.05fr); }
@@ -475,12 +596,19 @@ onMounted(loadConfig);
 .empty-list { padding: 24px; border: 1px dashed #cbd5e1; border-radius: 16px; color: #94a3b8; text-align: center; background: #f8fafc; }
 .row-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 .row-actions button { border: 1px solid #cbd5e1; background: #fff; border-radius: 11px; padding: 8px 11px; cursor: pointer; font-weight: 700; color: #334155; }
+.row-actions button:disabled { opacity: .55; cursor: not-allowed; }
 .row-actions .danger { color: #dc2626; border-color: #fecaca; }
+.model-current { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.model-current > div { min-width: 0; padding: 13px; border-radius: 16px; background: #f8fafc; border: 1px solid #e2e8f0; }
+.model-current span { color: #64748b; font-size: 12px; font-weight: 800; text-transform: uppercase; }
+.model-current strong { display: block; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #0f172a; }
+.model-current p { margin-top: 6px; overflow-wrap: anywhere; }
+.model-list { display: grid; gap: 10px; }
 .stats pre { overflow: auto; max-height: 420px; min-height: 180px; padding: 14px; border-radius: 16px; background: #0f172a; color: #e2e8f0; line-height: 1.5; }
 .stats.compact pre { max-height: 220px; min-height: 120px; margin-top: 14px; }
 .hint { color: #64748b; line-height: 1.5; }
 .rag-doc-list { display: grid; gap: 10px; }
 .rag-doc-item { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 13px; border-radius: 16px; background: #f8fafc; border: 1px solid #e2e8f0; }
 @media (max-width: 1180px) { .metric-grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); } .content-grid, .content-grid.two-column, .content-grid.wide-editor { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .admin-shell { flex-direction: column; } .admin-sidebar { width: 100%; } .admin-main { height: auto; } .topbar, .topbar-actions { align-items: stretch; flex-direction: column; } .metric-grid, .overview-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .admin-shell { flex-direction: column; } .admin-sidebar { width: 100%; } .admin-main { height: auto; } .topbar, .topbar-actions { align-items: stretch; flex-direction: column; } .metric-grid, .overview-grid, .model-current { grid-template-columns: 1fr; } }
 </style>

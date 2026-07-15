@@ -153,6 +153,17 @@ class RAGConfigRequest(BaseModel):
     enabled: bool = True
 
 
+class ModelConfigRequest(BaseModel):
+    model_name: str = Field(..., min_length=1)
+    base_url: str = Field(..., min_length=1)
+    api_key: Optional[str] = None
+    enabled: bool = True
+
+
+class ActiveModelRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+
+
 class ResearchResponse(BaseModel):
     """HTTP response containing the generated report and structured tasks."""
 
@@ -230,6 +241,40 @@ def create_app() -> FastAPI:
                 env[key.strip()] = val.strip()
         return env
 
+    def mask_secret(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        if len(value) <= 8:
+            return "****"
+        return f"{value[:4]}...{value[-4:]}"
+
+    def sanitize_model_config(item: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized = {key: val for key, val in item.items() if key != "api_key"}
+        api_key = item.get("api_key") or ""
+        sanitized["has_api_key"] = bool(api_key)
+        sanitized["api_key_mask"] = mask_secret(api_key)
+        return sanitized
+
+    def current_model_info(config: Dict[str, Any]) -> Dict[str, Any]:
+        llm = getattr(getattr(app.state, "bio_agent", None), "llm", None)
+        if not llm:
+            return {
+                "name": config.get("active_model", ""),
+                "model_name": "",
+                "base_url": "",
+                "provider": "",
+                "has_api_key": False,
+                "api_key_mask": "",
+            }
+        return {
+            "name": config.get("active_model", ""),
+            "model_name": getattr(llm, "model", ""),
+            "base_url": getattr(llm, "base_url", ""),
+            "provider": getattr(llm, "provider", ""),
+            "has_api_key": bool(getattr(llm, "api_key", "")),
+            "api_key_mask": mask_secret(getattr(llm, "api_key", "")),
+        }
+
     @app.get("/admin/config")
     def get_admin_config() -> Dict[str, Any]:
         config = load_config()
@@ -246,6 +291,8 @@ def create_app() -> FastAPI:
             "mcp_config": config.get("mcp", []),
             "tool_config": config.get("tools", []),
             "skills": config.get("skills", []),
+            "model": current_model_info(config),
+            "model_config": [sanitize_model_config(item) for item in config.get("models", [])],
             "rag": app.state.bio_agent.get_rag_stats(),
             "rag_config": config.get("rag", {}),
         }
@@ -299,6 +346,83 @@ def create_app() -> FastAPI:
     def delete_skill_config(name: str) -> Dict[str, Any]:
         delete_item("skills", name)
         return {"ok": True}
+
+    @app.post("/admin/models")
+    def save_model_config(payload: ModelConfigRequest) -> Dict[str, Any]:
+        previous_config = load_config()
+        config = json.loads(json.dumps(previous_config, ensure_ascii=False))
+        models: List[Dict[str, Any]] = list(config.get("models", []))
+        name = payload.model_name.strip()
+        existing = next((item for item in models if item.get("name") == name), None)
+        api_key = (payload.api_key or "").strip()
+        if not api_key and existing:
+            api_key = existing.get("api_key", "")
+
+        item = {
+            "name": name,
+            "model_name": name,
+            "base_url": payload.base_url.strip(),
+            "api_key": api_key,
+            "enabled": payload.enabled,
+        }
+        for index, current in enumerate(models):
+            if current.get("name") == name:
+                models[index] = item
+                break
+        else:
+            models.append(item)
+
+        config["models"] = models
+        if payload.enabled:
+            config["active_model"] = name
+        elif config.get("active_model") == name:
+            next_model = next((model for model in models if model.get("name") != name and model.get("enabled", True)), None)
+            config["active_model"] = next_model.get("name", "") if next_model else ""
+        try:
+            save_config(config)
+            reload_agent_config()
+            return {"ok": True}
+        except Exception as exc:
+            save_config(previous_config)
+            reload_agent_config()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/admin/models/active")
+    def activate_model_config(payload: ActiveModelRequest) -> Dict[str, Any]:
+        previous_config = load_config()
+        config = json.loads(json.dumps(previous_config, ensure_ascii=False))
+        models = config.get("models", [])
+        target = next((item for item in models if item.get("name") == payload.name), None)
+        if not target:
+            raise HTTPException(status_code=404, detail="Model config not found")
+        if target.get("enabled") is False:
+            raise HTTPException(status_code=400, detail="Model config is disabled")
+        config["active_model"] = payload.name
+        try:
+            save_config(config)
+            reload_agent_config()
+            return {"ok": True}
+        except Exception as exc:
+            save_config(previous_config)
+            reload_agent_config()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/admin/models/{name}")
+    def delete_model_config(name: str) -> Dict[str, Any]:
+        previous_config = load_config()
+        config = json.loads(json.dumps(previous_config, ensure_ascii=False))
+        config["models"] = [item for item in config.get("models", []) if item.get("name") != name]
+        if config.get("active_model") == name:
+            next_model = next((item for item in config["models"] if item.get("enabled", True)), None)
+            config["active_model"] = next_model.get("name", "") if next_model else ""
+        try:
+            save_config(config)
+            reload_agent_config()
+            return {"ok": True}
+        except Exception as exc:
+            save_config(previous_config)
+            reload_agent_config()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/admin/rag")
     def save_rag_config(payload: RAGConfigRequest) -> Dict[str, Any]:

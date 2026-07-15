@@ -36,6 +36,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         }
     ],
     "skills": [],
+    "models": [],
+    "active_model": "",
     "rag": {
         "namespace": "default",
         "top_k": 5,
@@ -63,6 +65,10 @@ def load_config() -> Dict[str, Any]:
     for key in ("mcp", "tools", "skills"):
         if not isinstance(config.get(key), list):
             config[key] = []
+    if not isinstance(config.get("models"), list):
+        config["models"] = []
+    if not isinstance(config.get("active_model"), str):
+        config["active_model"] = ""
     if not isinstance(config.get("rag"), dict):
         config["rag"] = DEFAULT_CONFIG["rag"].copy()
     return config

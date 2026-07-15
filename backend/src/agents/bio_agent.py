@@ -43,7 +43,7 @@ class BioAgent:
             self.admin_config = load_config()
 
             # 初始化LLM客户端
-            self.llm = HelloAgentsLLM()
+            self.llm = self._create_llm()
             logger.info(f"✅ LLM客户端初始化完成，模型: {self.llm.model}")
             # self.mcp_tool = MCPTool(
             #     name="amap_mcp",
@@ -203,8 +203,28 @@ class BioAgent:
                 return bool(item.get("enabled", True))
         return True
 
+    def _create_llm(self) -> HelloAgentsLLM:
+        active_name = self.admin_config.get("active_model")
+        models = self.admin_config.get("models", [])
+        active_model = next(
+            (
+                item for item in models
+                if item.get("name") == active_name and item.get("enabled", True)
+            ),
+            None,
+        )
+        if not active_model:
+            return HelloAgentsLLM()
+
+        return HelloAgentsLLM(
+            model=active_model.get("model_name") or active_model.get("name"),
+            api_key=active_model.get("api_key"),
+            base_url=active_model.get("base_url"),
+        )
+
     def reload_admin_config(self) -> None:
         self.admin_config = load_config()
+        self.llm = self._create_llm()
         self._init_agents()
         self._init_mcp_services()
         rag_config = self.admin_config.get("rag", {})
