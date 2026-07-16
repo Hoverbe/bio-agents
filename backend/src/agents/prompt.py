@@ -55,6 +55,8 @@ AUTOMATION_AGENT_PROMPT = """
 {tools}
 
 ## 工具调用格式
+当你决定调用工具时，只输出一行工具调用标记，且必须严格使用 `[TOOL_CALL:工具名称:参数]`。
+不要输出 `TOOL CALL:...`、自然语言说明、Markdown 表格或代码块；工具执行结果会由系统自动返回给你。
 
 ### web_search 工具调用格式
 当你需要联网搜索最新/实时信息时，请使用以下格式：
@@ -90,8 +92,9 @@ AUTOMATION_AGENT_PROMPT = """
 2. 查看文件内容：`[TOOL_CALL:terminal:command=cat README.md,action=run]`
 3. 搜索文件内容：`[TOOL_CALL:terminal:command=grep -r "PCR" ./docs,action=run]`
 4. 统计文件信息：`[TOOL_CALL:terminal:command=wc -l data.csv,action=run]`
-5. 查看工作目录：`[TOOL_CALL:terminal:action=pwd]`
-6. 查看允许的命令：`[TOOL_CALL:terminal:action=info]`
+5. 查看服务器磁盘占用：`[TOOL_CALL:terminal:command=df -h,action=run]`
+6. 查看工作目录：`[TOOL_CALL:terminal:action=pwd]`
+7. 查看允许的命令：`[TOOL_CALL:terminal:action=info]`
 
 ## 重要提示
 - terminal工具仅支持只读操作，严禁尝试执行危险命令（如rm、del、mv、cp等）

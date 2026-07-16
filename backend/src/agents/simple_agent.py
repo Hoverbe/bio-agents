@@ -58,6 +58,7 @@ class SimpleAgent(Agent):
         tools_section += "\n## 工具调用格式\n"
         tools_section += "当需要使用工具时，请使用以下格式：\n"
         tools_section += "`[TOOL_CALL:{tool_name}:{parameters}]`\n\n"
+        tools_section += "只能输出这一行工具调用标记，不要把工具调用写成普通文本、Markdown 表格或 `TOOL CALL:...`。\n"
 
         tools_section += "### 参数格式说明\n"
         tools_section += "1. **多个参数**：使用 `key=value` 格式，用逗号分隔\n"
@@ -99,11 +100,37 @@ class SimpleAgent(Agent):
                 'original': original.group(0) if original else f'[TOOL_CALL:{tool_name}:{parameters}]'
             })
 
+        # 格式1.1：兼容小模型常见的无方括号/空格写法：
+        # TOOL CALL:terminal:command=du -sh /,action=run
+        # TOOL_CALL: terminal: {"command": "du -sh /", "action": "run"}
+        if len(tool_calls) == 0 and self.tool_registry:
+            available_tools = set(self.tool_registry.list_tools())
+            for line in text.splitlines():
+                line = line.strip().strip('`').strip()
+                if not line:
+                    continue
+                match = re.match(
+                    r'^TOOL[\s_-]*CALL\s*[:：]\s*([A-Za-z0-9_.-]+)\s*[:：]\s*(.+?)\s*$',
+                    line,
+                    flags=re.IGNORECASE
+                )
+                if not match:
+                    continue
+                tool_name = match.group(1).strip()
+                parameters = match.group(2).strip().rstrip(']').strip()
+                if tool_name in available_tools and parameters:
+                    tool_calls.append({
+                        'tool_name': tool_name,
+                        'parameters': parameters,
+                        'original': line
+                    })
+                    break
+
         # 格式1.5：兼容模型输出的 tool_name:key=value 单行格式
         if len(tool_calls) == 0 and self.tool_registry:
             available_tools = set(self.tool_registry.list_tools())
             for line in text.splitlines():
-                line = line.strip().strip('`')
+                line = line.strip().strip('`').strip()
                 if ':' not in line:
                     continue
                 tool_name, parameters = line.split(':', 1)
@@ -152,23 +179,38 @@ class SimpleAgent(Agent):
             # 尝试解析JSON
             try:
                 data = json.loads(cleaned_text)
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict) and 'action' in item:
-                            tool_name = item.get('action', '')
-                            action_input = item.get('action_input', {})
-                            
-                            # 将 action_input 转换为字符串参数
-                            if isinstance(action_input, dict):
-                                params_str = ",".join([f"{k}={v}" for k, v in action_input.items()])
-                            else:
-                                params_str = str(action_input)
-                            
-                            tool_calls.append({
-                                'tool_name': tool_name.strip(),
-                                'parameters': params_str,
-                                'original': json.dumps(item)
-                            })
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+
+                    tool_name = (
+                        item.get('action')
+                        or item.get('tool')
+                        or item.get('tool_name')
+                        or item.get('name')
+                        or ''
+                    )
+                    if not tool_name:
+                        continue
+
+                    action_input = (
+                        item.get('action_input')
+                        if 'action_input' in item
+                        else item.get('parameters', item.get('args', item.get('input', {})))
+                    )
+
+                    # 将 action_input 转换为字符串参数
+                    if isinstance(action_input, dict):
+                        params_str = ",".join([f"{k}={v}" for k, v in action_input.items()])
+                    else:
+                        params_str = str(action_input)
+
+                    tool_calls.append({
+                        'tool_name': tool_name.strip(),
+                        'parameters': params_str,
+                        'original': json.dumps(item, ensure_ascii=False)
+                    })
             except json.JSONDecodeError:
                 # JSON解析失败，不做处理
                 pass
