@@ -204,3 +204,21 @@ class MySQLStore:
             row["created_at"] = row["created_at"].isoformat() if row.get("created_at") else None
             row["updated_at"] = row["updated_at"].isoformat() if row.get("updated_at") else None
         return rows
+
+    def delete_conversation(self, username: str, conversation_id: int) -> bool:
+        clean_username = username.strip()
+        if not clean_username:
+            raise ValueError("username cannot be empty")
+
+        with self.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE c
+                    FROM conversations c
+                    INNER JOIN users u ON u.id = c.user_id
+                    WHERE u.username = %s AND c.id = %s
+                    """,
+                    (clean_username, conversation_id),
+                )
+                return cursor.rowcount > 0

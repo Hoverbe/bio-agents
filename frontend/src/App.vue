@@ -169,6 +169,7 @@
               <button
                 class="delete-chat-btn"
                 @click.stop="deleteChat(index)"
+                :disabled="loading"
                 title="删除对话"
               >
                 <svg viewBox="0 0 24 24" width="14" height="14">
@@ -283,7 +284,7 @@
                 <span>{{ getAgentAvatarText(message.agent) }}</span>
               </div>
               <div class="message-content">
-                <p>{{ message.content }}</p>
+                <div class="message-markdown" v-html="renderMarkdown(message.content)"></div>
                 <span class="message-time">{{ message.agentName || 'Bio-Agent' }} · {{ message.timestamp }}</span>
               </div>
             </template>
@@ -421,6 +422,7 @@
 <script lang="ts" setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from "vue";
 import {
+  deleteConversation,
   getConversationHistory,
   getVoiceWsUrl,
   isVoiceWsSecure,
@@ -441,6 +443,7 @@ interface Message {
 }
 
 interface Chat {
+  id?: number;
   title: string;
   messages: Message[];
   lastMessage: string;
@@ -595,6 +598,102 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderInlineMarkdown(value: string): string {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/_([^_]+)_/g, "<em>$1</em>");
+}
+
+function renderMarkdown(content: string): string {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const html: string[] = [];
+  const codeLines: string[] = [];
+  let inCodeBlock = false;
+  let listType: "ul" | "ol" | null = null;
+
+  const closeList = () => {
+    if (!listType) return;
+    html.push(`</${listType}>`);
+    listType = null;
+  };
+
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (inCodeBlock) {
+        html.push(`<pre><code>${codeLines.join("\n")}</code></pre>`);
+        codeLines.length = 0;
+      } else {
+        closeList();
+      }
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(escapeHtml(line));
+      continue;
+    }
+
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      closeList();
+      const level = headingMatch[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    const bulletMatch = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (bulletMatch) {
+      if (listType !== "ul") {
+        closeList();
+        listType = "ul";
+        html.push("<ul>");
+      }
+      html.push(`<li>${renderInlineMarkdown(bulletMatch[1])}</li>`);
+      continue;
+    }
+
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+    if (orderedMatch) {
+      if (listType !== "ol") {
+        closeList();
+        listType = "ol";
+        html.push("<ol>");
+      }
+      html.push(`<li>${renderInlineMarkdown(orderedMatch[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    html.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+  }
+
+  if (inCodeBlock) {
+    html.push(`<pre><code>${codeLines.join("\n")}</code></pre>`);
+  }
+  closeList();
+
+  return html.join("");
 }
 
 function openFilePicker() {
@@ -818,7 +917,19 @@ function switchChat(index: number) {
 }
 
 // 删除对话
-function deleteChat(index: number) {
+async function deleteChat(index: number) {
+  const chat = chatHistory.value[index];
+  if (!chat) return;
+
+  if (chat.id) {
+    try {
+      await deleteConversation(username.value.trim(), chat.id);
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "删除对话失败";
+      return;
+    }
+  }
+
   chatHistory.value.splice(index, 1);
 
   // 如果删除的是当前对话
@@ -1428,6 +1539,13 @@ function handleStreamEvent(event: any) {
         nextTick(() => scrollToBottom());
       }
       break;
+
+    case "conversation_saved":
+      if (currentChat.value && typeof event.id === "number") {
+        currentChat.value.id = event.id;
+        saveChatHistory();
+      }
+      break;
       
     case "done":
       loading.value = false;
@@ -1493,6 +1611,7 @@ function recordToChat(record: ConversationRecord): Chat {
       ];
   const lastMessage = messages[messages.length - 1]?.content || "";
   return {
+    id: record.id,
     title: record.request_text.slice(0, 20) + (record.request_text.length > 20 ? "..." : ""),
     messages,
     lastMessage: lastMessage.slice(0, 30) + (lastMessage.length > 30 ? "..." : ""),
@@ -2294,6 +2413,75 @@ textarea {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message-markdown {
+  font-size: 15px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.message-markdown :deep(p),
+.message-markdown :deep(ul),
+.message-markdown :deep(ol),
+.message-markdown :deep(pre),
+.message-markdown :deep(h1),
+.message-markdown :deep(h2),
+.message-markdown :deep(h3),
+.message-markdown :deep(h4),
+.message-markdown :deep(h5),
+.message-markdown :deep(h6) {
+  margin: 0 0 8px;
+}
+
+.message-markdown :deep(p:last-child),
+.message-markdown :deep(ul:last-child),
+.message-markdown :deep(ol:last-child),
+.message-markdown :deep(pre:last-child) {
+  margin-bottom: 0;
+}
+
+.message-markdown :deep(h1),
+.message-markdown :deep(h2),
+.message-markdown :deep(h3),
+.message-markdown :deep(h4),
+.message-markdown :deep(h5),
+.message-markdown :deep(h6) {
+  color: inherit;
+  font-size: 1em;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.message-markdown :deep(ul),
+.message-markdown :deep(ol) {
+  padding-left: 1.25em;
+}
+
+.message-markdown :deep(li + li) {
+  margin-top: 4px;
+}
+
+.message-markdown :deep(code) {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.message-markdown :deep(pre) {
+  max-width: 100%;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.message-markdown :deep(pre code) {
+  padding: 0;
+  background: transparent;
+  white-space: pre;
 }
 
 .is-user .message-content p {
@@ -3215,6 +3403,12 @@ textarea {
 
   .message-content p,
   .is-user .message-content p {
+    color: inherit;
+    font-size: 17px;
+    line-height: 1.55;
+  }
+
+  .message-markdown {
     color: inherit;
     font-size: 17px;
     line-height: 1.55;

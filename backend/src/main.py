@@ -486,6 +486,22 @@ def create_app() -> FastAPI:
             logger.exception("Conversation history lookup failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    @app.delete("/conversations/{username}/{conversation_id}")
+    def delete_conversation(username: str, conversation_id: int) -> Dict[str, Any]:
+        try:
+            deleted = app.state.mysql_store.delete_conversation(
+                username=username,
+                conversation_id=conversation_id,
+            )
+            if not deleted:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            return {"deleted": True, "id": conversation_id}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Conversation delete failed")
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @app.post("/attachments/parse", response_model=AttachmentParseResponse)
     def parse_chat_attachment(file: UploadFile = File(...)) -> AttachmentParseResponse:
         try:
@@ -584,6 +600,7 @@ def create_app() -> FastAPI:
         def event_iterator() -> Iterator[str]:
             response_parts: List[str] = []
             status = "success"
+            saved = False
             file_context = format_attachment_context(payload.attachments)
             try:
                 for event in app.state.bio_agent.run_research_stream(
@@ -598,6 +615,20 @@ def create_app() -> FastAPI:
                         response_parts.append(str(content))
                     if event_type == "error":
                         status = "failed"
+                    if event_type == "done":
+                        response_text = "".join(response_parts)
+                        saved_history = [*(payload.history or []), {"role": "assistant", "content": response_text}]
+                        conversation_id = app.state.mysql_store.save_conversation(
+                            username=payload.username,
+                            request_text=payload.topic,
+                            response_text=response_text,
+                            conversation_type="research_stream",
+                            history=saved_history,
+                            status=status,
+                        )
+                        saved = True
+                        saved_payload = {"type": "conversation_saved", "id": conversation_id}
+                        yield f"data: {json.dumps(saved_payload, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as exc:
                 status = "failed"
@@ -606,6 +637,8 @@ def create_app() -> FastAPI:
                 response_parts.append(str(exc))
                 yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
             finally:
+                if saved:
+                    return
                 response_text = "".join(response_parts)
                 saved_history = [*(payload.history or []), {"role": "assistant", "content": response_text}]
                 app.state.mysql_store.save_conversation(

@@ -191,6 +191,13 @@ export function getConversationHistory(username: string): Promise<ConversationHi
   return requestJSON(`/conversations/${encodeURIComponent(username)}`);
 }
 
+export function deleteConversation(username: string, conversationId: number): Promise<{ deleted: boolean; id: number }> {
+  return requestJSON(
+    `/conversations/${encodeURIComponent(username)}/${encodeURIComponent(String(conversationId))}`,
+    { method: "DELETE" }
+  );
+}
+
 // 发送聊天消息
 export async function sendMessage(username: string, message: string): Promise<string> {
   const response = await fetch(`${baseURL}/chat`, {

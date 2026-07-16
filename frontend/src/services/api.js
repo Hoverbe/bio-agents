@@ -123,6 +123,9 @@ export function deleteRAGDocument(source, namespace = "default") {
 export function getConversationHistory(username) {
     return requestJSON(`/conversations/${encodeURIComponent(username)}`);
 }
+export function deleteConversation(username, conversationId) {
+    return requestJSON(`/conversations/${encodeURIComponent(username)}/${encodeURIComponent(String(conversationId))}`, { method: "DELETE" });
+}
 // 发送聊天消息
 export async function sendMessage(username, message) {
     const response = await fetch(`${baseURL}/chat`, {
