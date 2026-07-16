@@ -2260,18 +2260,29 @@ textarea {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  min-width: 0;
   margin-bottom: 4px;
 }
 
 .chat-title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-weight: 600;
   font-size: 14px;
   color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-time {
+  flex: 0 0 46px;
   font-size: 12px;
   color: #94a3b8;
+  line-height: 1.2;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .chat-last-message {
