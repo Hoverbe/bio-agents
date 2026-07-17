@@ -61,21 +61,79 @@ class SimpleAgent(Agent):
         tools_section += "只能输出这一行工具调用标记，不要把工具调用写成普通文本、Markdown 表格或 `TOOL CALL:...`。\n"
 
         tools_section += "### 参数格式说明\n"
-        tools_section += "1. **多个参数**：使用 `key=value` 格式，用逗号分隔\n"
+        tools_section += "1. **JSON参数**：复杂参数、脚本、多行文本必须使用 JSON 对象\n"
+        tools_section += "   示例：`[TOOL_CALL:python_script:{\"script\":\"import os\\\\nprint(os.environ['BIO_AGENT_OUTPUT_DIR'])\"}]`\n"
+        tools_section += "2. **多个简单参数**：可以使用 `key=value` 格式，用逗号分隔\n"
         tools_section += "   示例：`[TOOL_CALL:calculator_multiply:a=12,b=8]`\n"
         tools_section += "   示例：`[TOOL_CALL:filesystem_read_file:path=README.md]`\n\n"
-        tools_section += "2. **单个参数**：直接使用 `key=value`\n"
+        tools_section += "3. **单个参数**：直接使用 `key=value`\n"
         tools_section += "   示例：`[TOOL_CALL:search:query=Python编程]`\n\n"
-        tools_section += "3. **简单查询**：可以直接传入文本\n"
+        tools_section += "4. **简单查询**：可以直接传入文本\n"
         tools_section += "   示例：`[TOOL_CALL:search:Python编程]`\n\n"
 
         tools_section += "### 重要提示\n"
         tools_section += "- 参数名必须与工具定义的参数名完全匹配\n"
         tools_section += "- 数字参数直接写数字，不需要引号：`a=12` 而不是 `a=\"12\"`\n"
         tools_section += "- 文件路径等字符串参数直接写：`path=README.md`\n"
+        tools_section += "- `python_script` 必须使用 JSON 参数，且必须包含 `script` 字段\n"
         tools_section += "- 工具调用结果会自动插入到对话中，然后你可以基于结果继续回答\n"
 
         return base_prompt + tools_section
+
+    def _parse_bracket_tool_calls(self, text: str) -> list:
+        """解析 [TOOL_CALL:tool:params]，支持参数中的嵌套 JSON 与字符串转义。"""
+        calls = []
+        prefixes = ("[TOOL_CALL:", "[TOOL CALL:")
+        index = 0
+        while index < len(text):
+            starts = [(text.find(prefix, index), prefix) for prefix in prefixes]
+            starts = [(pos, prefix) for pos, prefix in starts if pos != -1]
+            if not starts:
+                break
+            start, prefix = min(starts, key=lambda item: item[0])
+            name_start = start + len(prefix)
+            name_end = text.find(":", name_start)
+            if name_end == -1:
+                break
+            tool_name = text[name_start:name_end].strip()
+            param_start = name_end + 1
+            cursor = param_start
+            json_depth = 0
+            in_string = False
+            escaped = False
+            end = -1
+            while cursor < len(text):
+                char = text[cursor]
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = not in_string
+                elif not in_string:
+                    if char in "{[":
+                        json_depth += 1
+                    elif char in "}]":
+                        if json_depth > 0:
+                            json_depth -= 1
+                        elif char == "]":
+                            end = cursor
+                            break
+                    elif char == "]" and json_depth == 0:
+                        end = cursor
+                        break
+                cursor += 1
+            if end == -1:
+                break
+            parameters = text[param_start:end].strip()
+            if tool_name and parameters:
+                calls.append({
+                    'tool_name': tool_name,
+                    'parameters': parameters,
+                    'original': text[start:end + 1]
+                })
+            index = end + 1
+        return calls
 
     def _parse_tool_calls(self, text: str) -> list:
         """解析文本中的工具调用（支持两种格式）
@@ -89,16 +147,7 @@ class SimpleAgent(Agent):
         tool_calls = []
         
         # 格式1：解析 [TOOL_CALL:] 或 [TOOL CALL:] 格式
-        pattern = r'\[TOOL[ _]CALL:([^:]+):([^\]]+)\]'
-        matches = re.findall(pattern, text)
-        
-        for tool_name, parameters in matches:
-            original = re.search(rf'\[TOOL[ _]CALL:{re.escape(tool_name)}:{re.escape(parameters)}\]', text)
-            tool_calls.append({
-                'tool_name': tool_name.strip(),
-                'parameters': parameters.strip(),
-                'original': original.group(0) if original else f'[TOOL_CALL:{tool_name}:{parameters}]'
-            })
+        tool_calls = self._parse_bracket_tool_calls(text)
 
         # 格式1.1：兼容小模型常见的无方括号/空格写法：
         # TOOL CALL:terminal:command=du -sh /,action=run
@@ -200,9 +249,9 @@ class SimpleAgent(Agent):
                         else item.get('parameters', item.get('args', item.get('input', {})))
                     )
 
-                    # 将 action_input 转换为字符串参数
+                    # 保留 dict 结构，避免脚本参数中的逗号和换行被 key=value 解析拆坏
                     if isinstance(action_input, dict):
-                        params_str = ",".join([f"{k}={v}" for k, v in action_input.items()])
+                        params_str = json.dumps(action_input, ensure_ascii=False)
                     else:
                         params_str = str(action_input)
 
@@ -242,9 +291,13 @@ class SimpleAgent(Agent):
         """智能解析工具参数"""
         import json
         param_dict = {}
+        parameters = parameters.strip()
+
+        if tool_name == "python_script" and not parameters.startswith('{'):
+            return {"script": parameters}
 
         # 尝试解析JSON格式
-        if parameters.strip().startswith('{'):
+        if parameters.startswith('{'):
             try:
                 param_dict = json.loads(parameters)
                 # JSON解析成功，进行类型转换

@@ -40,6 +40,7 @@ client = MCPClient(config)
 
 from typing import Dict, Any, List, Optional, Union
 import asyncio
+import json
 import os
 
 try:
@@ -250,13 +251,29 @@ class MCPClient:
             if len(result.content) == 1:
                 content = result.content[0]
                 if hasattr(content, 'text'):
-                    return content.text
+                    text = content.text
+                    if isinstance(text, str):
+                        stripped = text.strip()
+                        if stripped:
+                            try:
+                                return json.loads(stripped)
+                            except json.JSONDecodeError:
+                                return text
+                    return text
                 elif hasattr(content, 'data'):
                     return content.data
-            return [
-                getattr(c, 'text', getattr(c, 'data', str(c)))
-                for c in result.content
-            ]
+            parsed_content = []
+            for content in result.content:
+                value = getattr(content, 'text', getattr(content, 'data', str(content)))
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if stripped:
+                        try:
+                            value = json.loads(stripped)
+                        except json.JSONDecodeError:
+                            pass
+                parsed_content.append(value)
+            return parsed_content
         return None
 
     async def list_resources(self) -> List[Dict[str, Any]]:

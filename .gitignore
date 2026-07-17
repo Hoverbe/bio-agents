@@ -45,6 +45,7 @@ Thumbs.db
 logs/
 backend/logs/
 backend/data/
+backend/work_temp/
 
 # Deployment archives
 *.tar

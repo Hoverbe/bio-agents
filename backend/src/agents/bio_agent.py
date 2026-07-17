@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Iterator, Optional, Tuple
+from threading import Event
 import json
 import logging
 import re
@@ -8,6 +9,7 @@ from pathlib import Path
 from backend.src.agents.simple_agent import SimpleAgent
 from backend.src.core.llm import HelloAgentsLLM
 from backend.src.tools.builtin.protocol_tools import MCPTool
+from backend.src.tools.script_tool import create_python_script_tool
 from backend.src.tools.terminalTool import TerminalTool, create_terminal_tool
 from backend.src.tools.web_search_tool import WebSearchTool
 from backend.src.config import settings
@@ -21,14 +23,14 @@ logger = logging.getLogger(__name__)
 class BioAgent:
     """
     Bio-Agent主类 - 为生物科技公司设计的多智能体系统
-    
+
     核心功能：
     1. 基础问答 - 通过knowledge_agent回答生物学问题和公司SOP查询
     2. MCP服务连接 - 连接内部数据库、外部API等服务
     3. 流程化Skill执行 - 执行预设的生物信息学分析流程
     4. Python脚本自动化 - 编写并执行定制化脚本
     5. 文件处理 - 解析上传的PDF/TXT等文档
-    
+
     架构设计：
     - master_agent: 主控调度专家，负责任务分解和路由
     - knowledge_agent: 知识问答专家，处理纯文本问答
@@ -39,7 +41,7 @@ class BioAgent:
         """初始化Bio-Agent多智能体系统"""
         try:
             logger.info("🔧 初始化Bio-Agent多智能体系统...")
-            
+
             self.admin_config = load_config()
 
             # 初始化LLM客户端
@@ -54,10 +56,10 @@ class BioAgent:
             # )
             # 初始化各个专业Agent
             self._init_agents()
-            
+
             # 初始化MCP服务连接
             self._init_mcp_services()
-            
+
             # 初始化文件处理器
             self._init_file_handlers()
 
@@ -67,10 +69,10 @@ class BioAgent:
                 chunk_size=int(rag_config.get("chunk_size", 900)),
                 chunk_overlap=int(rag_config.get("chunk_overlap", 120)),
             )
-            
+
             # 任务执行历史
             self.task_history: List[Dict[str, Any]] = []
-            
+
             logger.info("✅ Bio-Agent多智能体系统初始化完成")
 
         except Exception as e:
@@ -81,8 +83,8 @@ class BioAgent:
         """初始化各个专业Agent"""
         logger.info("  - 创建主控调度Agent...")
         self.master_agent = SimpleAgent(
-            name="主控调度专家", 
-            llm=self.llm, 
+            name="主控调度专家",
+            llm=self.llm,
             system_prompt=MASTER_AGENT_PROMPT
         )
 
@@ -108,6 +110,15 @@ class BioAgent:
             enable_tool_calling=True
         )
 
+        try:
+            workspace = str(Path(__file__).resolve().parents[2] / "work_temp")
+            self.python_script_tool = create_python_script_tool(workspace=workspace)
+            self.automation_agent.add_tool(self.python_script_tool)
+            logger.info("  ✅ Python脚本工具已注册到自动化执行Agent")
+        except Exception as e:
+            logger.error(f"  ❌ Python脚本工具注册失败: {e}")
+            self.python_script_tool = None
+
         # 注册终端工具到 automation_agent
         if self.terminal_tool and self._is_tool_enabled("terminal"):
             try:
@@ -126,8 +137,8 @@ class BioAgent:
 
         logger.info("  - 创建知识问答Agent...")
         self.knowledge_agent = SimpleAgent(
-            name="知识问答专家", 
-            llm=self.llm, 
+            name="知识问答专家",
+            llm=self.llm,
             system_prompt=KNOWLEDGE_AGENT_PROMPT
         )
 
@@ -152,6 +163,7 @@ class BioAgent:
                 item.get("description", ""),
                 server_command=command,
                 env=item.get("env") or {},
+                cwd=item.get("cwd") or None,
             )
 
     def _init_file_handlers(self) -> None:
@@ -163,12 +175,12 @@ class BioAgent:
     def _register_mcp_service(self, service_name: str, description: str, server_command: list, **kwargs) -> bool:
         """
         注册MCP服务并添加到自动化执行Agent
-        
+
         Args:
             service_name: 服务名称
             description: 服务描述
             **kwargs: 服务配置参数
-            
+
         Returns:
             bool: 是否注册成功
         """
@@ -183,7 +195,7 @@ class BioAgent:
                 'description': description,
                 'tool': mcp_tool
             }
-            
+
             # 将MCP工具添加到自动化执行Agent
             try:
                 self.automation_agent.add_tool(mcp_tool)
@@ -191,7 +203,7 @@ class BioAgent:
             except Exception as e:
                 logger.error(f"❌ MCP服务 '{service_name}' 添加到Agent失败: {str(e)}")
                 return False
-            
+
             return True
         except Exception as e:
             logger.error(f"❌ MCP服务 '{service_name}' 注册失败: {str(e)}")
@@ -245,12 +257,12 @@ class BioAgent:
         """
         if not history:
             return "无"
-        
+
         history_lines = []
         for idx, item in enumerate(history[-10:]):  # 只保留最近10轮对话
             role = item.get('role', '')
             content = item.get('content', '')
-            
+
             if role == 'user':
                 history_lines.append(f"用户: {content}")
             elif role == 'assistant' or role == 'system':
@@ -259,7 +271,7 @@ class BioAgent:
                 # 兼容其他角色格式
                 agent_name = role.replace('_agent', '')
                 history_lines.append(f"{agent_name}: {content}")
-        
+
         return "\n".join(history_lines)
 
     def _normalize_tasks(self, tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -276,10 +288,10 @@ class BioAgent:
     def _parse_master_response(self, response: str) -> List[Dict[str, Any]]:
         """
         解析主控Agent的响应，提取子任务列表
-        
+
         Args:
             response: 主控Agent的响应文本
-            
+
         Returns:
             List[Dict]: 子任务列表
         """
@@ -297,30 +309,30 @@ class BioAgent:
                             task_content = task_content[4:].strip()
                     if task_content.endswith('```'):
                         task_content = task_content[:-3].strip()
-                        
+
                     tasks = json.loads(task_content)
                     if isinstance(tasks, list):
                         return self._normalize_tasks(tasks)
                     elif isinstance(tasks, dict) and 'tasks' in tasks:
                         return self._normalize_tasks(tasks['tasks'])
-            
+
             # 旧格式：直接是JSON
             cleaned_response = response.strip()
-            
+
             # 移除开头的 ```json 或 ``` 标记
             if cleaned_response.startswith('```'):
                 cleaned_response = cleaned_response[3:]
                 # 移除可能的 json 字样
                 if cleaned_response.lower().startswith('json'):
                     cleaned_response = cleaned_response[4:].strip()
-            
+
             # 移除结尾的 ``` 标记
             if cleaned_response.endswith('```'):
                 cleaned_response = cleaned_response[:-3].strip()
-            
+
             # 清理可能的多余空白字符
             cleaned_response = cleaned_response.strip()
-            
+
             try:
                 tasks = json.loads(cleaned_response)
             except json.JSONDecodeError:
@@ -354,11 +366,11 @@ class BioAgent:
     def _execute_task(self, task: Dict[str, Any], previous_results: str = "") -> Tuple[str, str]:
         """
         执行单个任务
-        
+
         Args:
             task: 任务字典，包含step, agent, task_description, dependency
             previous_results: 前置步骤的执行结果
-            
+
         Returns:
             Tuple[str, str]: (执行结果, 状态)
         """
@@ -368,7 +380,7 @@ class BioAgent:
         if agent_name in tool_agent_aliases:
             task_description = f"使用 {agent_name} 工具执行：{task_description}"
             agent_name = "automation_agent"
-        
+
         try:
             if agent_name == 'knowledge_agent':
                 # 知识问答任务
@@ -388,10 +400,15 @@ class BioAgent:
         task_description = self._build_web_search_task_description(query, conversation_history)
         return self._execute_automation_task(task_description)
 
-    def _execute_web_qa_task_stream(self, query: str, conversation_history: str = "") -> Iterator[str]:
+    def _execute_web_qa_task_stream(
+        self,
+        query: str,
+        conversation_history: str = "",
+        cancel_event: Optional[Event] = None,
+    ) -> Iterator[str]:
         """流式执行需要联网搜索的问答任务。"""
         task_description = self._build_web_search_task_description(query, conversation_history)
-        yield from self._execute_automation_task_stream(task_description)
+        yield from self._execute_automation_task_stream(task_description, cancel_event=cancel_event)
 
     def _execute_knowledge_task(self, query: str, conversation_history: str = "") -> Tuple[str, str]:
         """
@@ -483,11 +500,11 @@ class BioAgent:
     def _execute_automation_task(self, task_description: str, previous_results: str = "") -> Tuple[str, str]:
         """
         执行自动化任务
-        
+
         Args:
             task_description: 任务描述
             previous_results: 前置步骤结果
-            
+
         Returns:
             Tuple[str, str]: (执行结果, 状态)
         """
@@ -499,10 +516,10 @@ class BioAgent:
                 previous_step_results=previous_results,
                 tools=self.automation_agent.tool_registry.get_tools_description() if self.automation_agent.tool_registry else "暂无可用工具"
             )
-            
+
             # 更新Agent的系统提示词
             self.automation_agent.system_prompt = formatted_prompt
-            
+
             # 执行自动化任务
             response = self.automation_agent.run(input_text=task_description)
             # 清理响应，提取纯文本
@@ -515,26 +532,26 @@ class BioAgent:
     def _aggregate_results(self, task_results: List[Dict[str, Any]]) -> str:
         """
         聚合所有任务结果，生成最终总结
-        
+
         Args:
             task_results: 所有任务的执行结果
-            
+
         Returns:
             str: 最终总结报告
         """
         if not task_results:
             return "未执行任何任务"
-        
+
         summary = "## 任务执行总结\n\n"
         for i, result in enumerate(task_results, 1):
             status_icon = "✅" if result['status'] == 'success' else "❌"
             summary += f"### {i}. {result['task_description']}\n"
             summary += f"**状态**: {status_icon} {result['status']}\n"
             summary += f"**结果**: {result['execution_result']}\n\n"
-            
+
             if result.get('output_file'):
                 summary += f"**输出文件**: {result['output_file']}\n\n"
-        
+
         return summary
 
     def _format_task_results_for_synthesis(self, task_results: List[Dict[str, Any]]) -> str:
@@ -632,16 +649,16 @@ class BioAgent:
     def run(self, query: str, file_context: Optional[str] = None) -> str:
         """
         执行完整的用户请求处理流程
-        
+
         Args:
             query: 用户查询文本
             file_context: 上传文件的内容（如果有）
-            
+
         Returns:
             str: 最终响应
         """
         logger.info(f"🔍 收到用户请求: {query[:50]}..." if len(query) > 50 else f"🔍 收到用户请求: {query}")
-        
+
         try:
             attachment_context = (file_context or "").strip()
             effective_query = query
@@ -672,36 +689,36 @@ class BioAgent:
                 conversation_history="无"
             )
             self.master_agent.system_prompt = master_prompt
-            
+
             master_response = self.master_agent.run(input_text=effective_query)
             tasks = self._parse_master_response(master_response)
-            
+
             if not tasks:
                 # 如果解析失败，回退到 automation_agent，避免需要工具的问题被知识Agent拒答
                 logger.info("⚠️ 主控Agent未返回有效任务列表，回退到自动化执行Agent直接处理")
                 return self._execute_automation_task(effective_query)[0]
-            
+
             logger.info(f"📋 主控Agent分解出 {len(tasks)} 个任务")
-            
+
             # 2. 按顺序执行任务（考虑依赖关系）
             task_results: List[Dict[str, Any]] = []
             previous_results = ""
-            
+
             for task in tasks:
                 step = task.get('step', 0)
                 agent = task.get('agent', '')
                 task_desc = task.get('task_description', '')
                 dependency = task.get('dependency')
-                
+
                 # 检查依赖是否已完成
                 if isinstance(dependency, int) and dependency > len(task_results):
                     logger.warning(f"⚠️ 任务 {step} 依赖的步骤 {dependency} 尚未执行，跳过")
                     continue
-                
+
                 logger.info(f"🚀 执行任务 {step}: {task_desc[:30]}...")
-                
+
                 result, status = self._execute_task(task, previous_results)
-                
+
                 # 解析执行结果（如果是JSON格式）
                 execution_result = result
                 output_file = None
@@ -713,7 +730,7 @@ class BioAgent:
                         status = result_json[0].get('status', status)
                 except json.JSONDecodeError:
                     pass
-                
+
                 task_results.append({
                     'step': step,
                     'agent': agent,
@@ -722,13 +739,13 @@ class BioAgent:
                     'status': status,
                     'output_file': output_file
                 })
-                
+
                 # 更新前置结果
                 previous_results = execution_result
-            
+
             # 3. 主控汇总子任务结果，生成最终回答
             final_summary = self._synthesize_final_answer(effective_query, task_results, "无")
-            
+
             # 4. 保存任务历史
             self.task_history.append({
                 'timestamp': datetime.now().isoformat(),
@@ -737,10 +754,10 @@ class BioAgent:
                 'results': task_results,
                 'summary': final_summary
             })
-            
+
             logger.info("✅ 请求处理完成")
             return final_summary
-            
+
         except Exception as e:
             logger.error(f"❌ 请求处理失败: {str(e)}", exc_info=True)
             return f"处理请求时发生错误: {str(e)}"
@@ -751,6 +768,7 @@ class BioAgent:
         query: str,
         history: Optional[List[Dict[str, str]]] = None,
         file_context: Optional[str] = None,
+        cancel_event: Optional[Event] = None,
     ) -> Iterator[Dict[str, Any]]:
         """
         流式执行研究任务，支持任务清单实时更新和群聊效果
@@ -774,6 +792,15 @@ class BioAgent:
                 )
             logger.info(f"🔍 用户 {username} 发起研究请求: {query[:50]}...")
 
+            def cancelled() -> bool:
+                return bool(cancel_event and cancel_event.is_set())
+
+            def stop_if_cancelled() -> bool:
+                return cancelled()
+
+            if stop_if_cancelled():
+                return
+
             # 格式化对话历史
             history_str = self._format_history(history or [])
             if attachment_context:
@@ -785,6 +812,8 @@ class BioAgent:
 
             # 0. 查询路由：纯知识、联网问答、单步执行直接处理，混合任务才分发给 master_agent
             query_type = self._classify_query(effective_query)
+            if stop_if_cancelled():
+                return
             if query_type == "local_qa":
                 logger.info("🟢 识别为本地知识问答，直接使用知识问答Agent流式回答")
                 yield {
@@ -793,7 +822,9 @@ class BioAgent:
                     'agent': 'knowledge_agent',
                     'agent_name': '知识问答专家'
                 }
-                for chunk in self._execute_knowledge_task_stream(effective_query, conversation_history=history_str):
+                for chunk in self._execute_knowledge_task_stream(effective_query, conversation_history=history_str, cancel_event=cancel_event):
+                    if stop_if_cancelled():
+                        return
                     yield {
                         'type': 'message_chunk',
                         'agent': 'knowledge_agent',
@@ -812,7 +843,9 @@ class BioAgent:
                     'agent': 'automation_agent',
                     'agent_name': '联网检索专家'
                 }
-                for chunk in self._execute_web_qa_task_stream(effective_query, conversation_history=history_str):
+                for chunk in self._execute_web_qa_task_stream(effective_query, conversation_history=history_str, cancel_event=cancel_event):
+                    if stop_if_cancelled():
+                        return
                     yield {
                         'type': 'message_chunk',
                         'agent': 'automation_agent',
@@ -831,7 +864,9 @@ class BioAgent:
                     'agent': 'automation_agent',
                     'agent_name': '自动化执行专家'
                 }
-                for chunk in self._execute_automation_task_stream(effective_query):
+                for chunk in self._execute_automation_task_stream(effective_query, cancel_event=cancel_event):
+                    if stop_if_cancelled():
+                        return
                     yield {
                         'type': 'message_chunk',
                         'agent': 'automation_agent',
@@ -852,8 +887,10 @@ class BioAgent:
             self.master_agent.system_prompt = master_prompt
 
             master_response = self.master_agent.run(input_text=effective_query)
+            if stop_if_cancelled():
+                return
             tasks = self._parse_master_response(master_response)
-            
+
             # 如果有任务，发送任务分解总结
             if tasks:
                 task_descriptions = "\n".join([f"步骤 {t.get('step')}: {t.get('task_description')[:30]}..." for t in tasks])
@@ -873,7 +910,9 @@ class BioAgent:
                     'agent_name': '自动化执行专家'
                 }
 
-                for chunk in self._execute_automation_task_stream(effective_query):
+                for chunk in self._execute_automation_task_stream(effective_query, cancel_event=cancel_event):
+                    if stop_if_cancelled():
+                        return
                     yield {
                         'type': 'message_chunk',
                         'agent': 'automation_agent',
@@ -892,6 +931,8 @@ class BioAgent:
             task_results = []  # 收集所有任务结果用于总结
 
             for task in tasks:
+                if stop_if_cancelled():
+                    return
                 step = task.get('step', 0)
                 agent = task.get('agent', '')
                 task_desc = task.get('task_description', '')
@@ -920,7 +961,9 @@ class BioAgent:
                     if agent == 'knowledge_agent':
                         # 流式执行知识问答任务
                         result = ""
-                        for chunk in self._execute_knowledge_task_stream(task_desc, conversation_history=history_str):
+                        for chunk in self._execute_knowledge_task_stream(task_desc, conversation_history=history_str, cancel_event=cancel_event):
+                            if stop_if_cancelled():
+                                return
                             result += chunk
                             yield {
                                 'type': 'message_chunk',
@@ -941,7 +984,9 @@ class BioAgent:
                     elif agent == 'automation_agent':
                         # 流式执行自动化任务
                         result = ""
-                        for chunk in self._execute_automation_task_stream(task_desc, previous_results):
+                        for chunk in self._execute_automation_task_stream(task_desc, previous_results, cancel_event=cancel_event):
+                            if stop_if_cancelled():
+                                return
                             result += chunk
                             yield {
                                 'type': 'message_chunk',
@@ -961,7 +1006,11 @@ class BioAgent:
                         status = 'success'
                     else:
                         # 其他 Agent 使用原有方法
+                        if stop_if_cancelled():
+                            return
                         result, status = self._execute_task(task, previous_results)
+                        if stop_if_cancelled():
+                            return
                         yield {
                             'type': 'message',
                             'content': result,
@@ -1015,7 +1064,9 @@ class BioAgent:
 
             # 4. 主控汇总子任务结果，生成最终回答（流式）
             summary_content = self._synthesize_final_answer(effective_query, task_results, history_str)
-            
+            if stop_if_cancelled():
+                return
+
             # 创建新消息
             yield {
                 'type': 'message',
@@ -1026,6 +1077,8 @@ class BioAgent:
 
             chunk_size = 20
             for i in range(0, len(summary_content), chunk_size):
+                if stop_if_cancelled():
+                    return
                 chunk = summary_content[i:i+chunk_size]
                 complete = (i + chunk_size) >= len(summary_content)
                 yield {
@@ -1044,7 +1097,12 @@ class BioAgent:
             logger.error(f"❌ 研究任务失败: {str(e)}")
             yield {'type': 'error', 'detail': str(e)}
 
-    def _execute_knowledge_task_stream(self, query: str, conversation_history: str = "") -> Iterator[str]:
+    def _execute_knowledge_task_stream(
+        self,
+        query: str,
+        conversation_history: str = "",
+        cancel_event: Optional[Event] = None,
+    ) -> Iterator[str]:
         """
         流式执行知识问答任务（真正的流式输出，支持思考过程）
 
@@ -1080,17 +1138,19 @@ class BioAgent:
             buffer = ""
             in_thinking_section = False
             in_answer_section = False
-            
+
             for chunk in self.knowledge_agent.stream_run(input_text=query):
+                if cancel_event and cancel_event.is_set():
+                    return
                 buffer += chunk
-                
+
                 # 检查是否进入思考过程部分
                 if "## 思考过程" in buffer and not in_thinking_section and not in_answer_section:
                     in_thinking_section = True
                     # 移除 "## 思考过程" 标记
                     buffer = buffer.replace("## 思考过程", "")
                     continue
-                
+
                 # 检查是否进入回答部分
                 if "## 回答" in buffer and in_thinking_section:
                     in_thinking_section = False
@@ -1098,7 +1158,7 @@ class BioAgent:
                     # 移除 "## 回答" 标记
                     buffer = buffer.replace("## 回答", "")
                     continue
-                
+
                 # 流式输出思考过程或回答
                 if len(buffer) >= 5:
                     # 找到最近的标点或空格位置进行分割
@@ -1113,7 +1173,7 @@ class BioAgent:
                         split_pos = buffer.rfind(' ')
                     if split_pos == -1:
                         split_pos = len(buffer)
-                    
+
                     # 安全检查：确保split_pos在有效范围内
                     if split_pos >= 0 and split_pos < len(buffer):
                         send_content = buffer[:split_pos+1] if buffer[split_pos] in '。？！' else buffer[:split_pos]
@@ -1121,11 +1181,13 @@ class BioAgent:
                     else:
                         send_content = buffer
                         buffer = ""
-                    
+
                     if send_content.strip():
                         yield send_content
-            
+
             # 发送剩余内容
+            if cancel_event and cancel_event.is_set():
+                return
             if buffer.strip():
                 yield buffer
 
@@ -1133,7 +1195,12 @@ class BioAgent:
             logger.error(f"❌ 知识问答任务执行失败：{str(e)}")
             yield f"问答失败：{str(e)}"
 
-    def _execute_automation_task_stream(self, task_description: str, previous_results: str = "") -> Iterator[str]:
+    def _execute_automation_task_stream(
+        self,
+        task_description: str,
+        previous_results: str = "",
+        cancel_event: Optional[Event] = None,
+    ) -> Iterator[str]:
         """
         流式执行自动化任务（真正的流式输出，支持思考过程）
 
@@ -1161,17 +1228,19 @@ class BioAgent:
             in_thinking_section = False
             in_plan_section = False
             in_result_section = False
-            
+
             for chunk in self.automation_agent.stream_run(input_text=task_description):
+                if cancel_event and cancel_event.is_set():
+                    return
                 buffer += chunk
-                
+
                 # 检查是否进入思考过程部分
                 if "## 思考过程" in buffer and not in_thinking_section and not in_plan_section and not in_result_section:
                     in_thinking_section = True
                     # 移除 "## 思考过程" 标记
                     buffer = buffer.replace("## 思考过程", "")
                     continue
-                
+
                 # 检查是否进入执行计划部分
                 if "## 执行计划" in buffer and in_thinking_section:
                     in_thinking_section = False
@@ -1179,7 +1248,7 @@ class BioAgent:
                     # 移除 "## 执行计划" 标记
                     buffer = buffer.replace("## 执行计划", "")
                     continue
-                
+
                 # 检查是否进入执行结果部分
                 if "## 执行结果" in buffer and in_plan_section:
                     in_plan_section = False
@@ -1187,7 +1256,7 @@ class BioAgent:
                     # 移除 "## 执行结果" 标记
                     buffer = buffer.replace("## 执行结果", "")
                     continue
-                
+
                 # 流式输出思考过程、执行计划或执行结果
                 if len(buffer) >= 5:
                     # 找到最近的标点或空格位置进行分割
@@ -1202,7 +1271,7 @@ class BioAgent:
                         split_pos = buffer.rfind(' ')
                     if split_pos == -1:
                         split_pos = len(buffer)
-                    
+
                     # 安全检查：确保split_pos在有效范围内
                     if split_pos >= 0 and split_pos < len(buffer):
                         send_content = buffer[:split_pos+1] if buffer[split_pos] in '。？！' else buffer[:split_pos]
@@ -1210,14 +1279,16 @@ class BioAgent:
                     else:
                         send_content = buffer
                         buffer = ""
-                    
+
                     if send_content.strip():
                         yield send_content
-            
+
             # 发送剩余内容
+            if cancel_event and cancel_event.is_set():
+                return
             if buffer.strip():
                 yield buffer
-            
+
         except Exception as e:
             logger.error(f"❌ 自动化任务执行失败：{str(e)}")
             yield f"自动化执行失败：{str(e)}"
@@ -1266,11 +1337,11 @@ class BioAgent:
     def execute_automation(self, task_description: str, previous_results: str = "") -> str:
         """
         直接执行自动化任务
-        
+
         Args:
             task_description: 任务描述
             previous_results: 前置步骤结果
-            
+
         Returns:
             str: 执行结果
         """
@@ -1280,32 +1351,32 @@ class BioAgent:
     def _generate_summary(self, query: str, tasks: List[Dict], task_results: List[Dict]) -> str:
         """
         生成任务执行总结报告
-        
+
         Args:
             query: 用户原始问题
             tasks: 任务列表
             task_results: 任务执行结果列表
-            
+
         Returns:
             str: 总结报告内容
         """
         # 统计成功和失败的任务
         success_count = sum(1 for r in task_results if r.get('status') == 'success')
         fail_count = len(task_results) - success_count
-        
+
         # 构建总结报告
         summary_parts = []
-        
+
         # 开头
         summary_parts.append(f"根据您的问题「{query}」，我已完成以下分析：")
-        
+
         # 任务执行概况
         summary_parts.append(f"\n📊 任务执行概况：")
         summary_parts.append(f"   - 共执行 {len(task_results)} 个步骤")
         summary_parts.append(f"   - ✅ 成功：{success_count} 个")
         if fail_count > 0:
             summary_parts.append(f"   - ❌ 失败：{fail_count} 个")
-        
+
         # 各步骤详情
         if task_results:
             summary_parts.append(f"\n📋 各步骤执行详情：")
@@ -1315,11 +1386,11 @@ class BioAgent:
                 task_desc = result.get('task_description', '')[:50] + "..." if len(result.get('task_description', '')) > 50 else result.get('task_description', '')
                 status = result.get('status', '')
                 result_content = result.get('result', '')
-                
+
                 status_icon = "✅" if status == 'success' else "❌"
                 summary_parts.append(f"\n{status_icon} **步骤 {step}**（{agent_name}）")
                 summary_parts.append(f"   任务：{task_desc}")
-                
+
                 # 如果是成功的任务，提取关键结果
                 if status == 'success':
                     # 清理结果内容，提取关键信息
@@ -1328,31 +1399,31 @@ class BioAgent:
                         summary_parts.append(f"   结果：{clean_result}")
                 else:
                     summary_parts.append(f"   错误：{result_content[:100]}...")
-        
+
         # 总结
         summary_parts.append(f"\n🎯 总结：")
         if fail_count == 0:
             summary_parts.append("   所有任务均已成功完成！")
         else:
             summary_parts.append(f"   部分任务执行失败（{fail_count}/{len(task_results)}），请查看详情。")
-        
+
         summary_parts.append("\n如果您需要进一步的帮助或有其他问题，请随时告诉我！")
-        
+
         return "\n".join(summary_parts)
 
     def _clean_summary_result(self, result: str) -> str:
         """
         清理任务结果，提取关键信息用于总结
-        
+
         Args:
             result: 原始任务结果
-            
+
         Returns:
             str: 清理后的结果摘要
         """
         if not result:
             return ""
-            
+
         # 移除JSON格式
         cleaned = result.strip()
         if cleaned.startswith('```'):
@@ -1361,7 +1432,7 @@ class BioAgent:
                 cleaned = cleaned[4:].strip()
             if cleaned.endswith('```'):
                 cleaned = cleaned[:-3].strip()
-        
+
         # 尝试解析JSON提取关键信息
         try:
             data = json.loads(cleaned)
@@ -1377,29 +1448,29 @@ class BioAgent:
                         return str(item['result'])[:100] + "..." if len(str(item['result'])) > 100 else str(item['result'])
         except:
             pass
-        
+
         # 如果不是JSON或者解析失败，直接截取文本
         # 移除多余的空白和特殊字符
         cleaned = ' '.join(cleaned.split())
         if len(cleaned) > 150:
             cleaned = cleaned[:150] + "..."
-        
+
         return cleaned
 
     def call_mcp_service(self, service_name: str, **kwargs) -> str:
         """
         调用MCP服务
-        
+
         Args:
             service_name: MCP服务名称
             **kwargs: 服务参数
-            
+
         Returns:
             str: 服务响应
         """
         if service_name not in self.mcp_services:
             return f"未找到MCP服务: {service_name}"
-        
+
         try:
             mcp_tool = self.mcp_services[service_name]['tool']
             result = mcp_tool.run(kwargs)
@@ -1411,11 +1482,11 @@ class BioAgent:
     def write_and_run_script(self, script_content: str, script_type: str = "python") -> str:
         """
         编写并执行脚本
-        
+
         Args:
             script_content: 脚本内容
             script_type: 脚本类型 (python/bash)
-            
+
         Returns:
             str: 执行结果
         """
@@ -1423,12 +1494,12 @@ class BioAgent:
             import subprocess
             import tempfile
             import os
-            
+
             # 创建临时脚本文件
             with tempfile.NamedTemporaryFile(mode='w', suffix=f'.{script_type}', delete=False) as f:
                 f.write(script_content)
                 script_path = f.name
-            
+
             # 执行脚本
             if script_type == "python":
                 result = subprocess.run(
@@ -1446,15 +1517,15 @@ class BioAgent:
                 )
             else:
                 return f"不支持的脚本类型: {script_type}"
-            
+
             # 清理临时文件
             os.unlink(script_path)
-            
+
             if result.returncode == 0:
                 return f"脚本执行成功:\n{result.stdout}"
             else:
                 return f"脚本执行失败:\n标准输出: {result.stdout}\n错误输出: {result.stderr}"
-                
+
         except subprocess.TimeoutExpired:
             return "脚本执行超时"
         except Exception as e:
@@ -1464,19 +1535,19 @@ class BioAgent:
     def parse_document(self, file_path: str) -> str:
         """
         解析文档文件
-        
+
         Args:
             file_path: 文件路径
-            
+
         Returns:
             str: 解析结果
         """
         try:
             file_ext = file_path.split('.')[-1].lower()
-            
+
             if file_ext not in self.supported_file_types:
                 return f"不支持的文件类型: {file_ext}"
-            
+
             if file_ext == 'txt':
                 with open(file_path, 'r', encoding='utf-8') as f:
                     return f.read()
@@ -1501,7 +1572,7 @@ class BioAgent:
             else:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     return f.read()
-                    
+
         except FileNotFoundError:
             return f"文件未找到: {file_path}"
         except Exception as e:
@@ -1511,7 +1582,7 @@ class BioAgent:
     def list_mcp_services(self) -> List[Dict[str, str]]:
         """
         获取已注册的MCP服务列表
-        
+
         Returns:
             List[Dict]: 服务列表
         """
@@ -1523,10 +1594,10 @@ class BioAgent:
     def get_task_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """
         获取任务执行历史
-        
+
         Args:
             limit: 返回条数限制
-            
+
         Returns:
             List[Dict]: 任务历史列表
         """

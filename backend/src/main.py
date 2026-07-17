@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import sys
+import threading
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, List
+from urllib.parse import quote, unquote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 from agents.bio_agent import BioAgent
@@ -85,6 +91,8 @@ class ResearchAttachment(BaseModel):
     content: str = Field(default="", description="Extracted text content")
     content_type: Optional[str] = Field(default=None, description="Uploaded file MIME type")
     truncated: bool = Field(default=False, description="Whether extracted content was truncated")
+    saved_path: Optional[str] = Field(default=None, description="Server-side saved upload path")
+    saved_url: Optional[str] = Field(default=None, description="Server-side saved upload URL")
 
 
 class AttachmentParseResponse(BaseModel):
@@ -96,6 +104,8 @@ class AttachmentParseResponse(BaseModel):
     size: Optional[int] = None
     chars: int
     truncated: bool = False
+    saved_path: Optional[str] = None
+    saved_url: Optional[str] = None
 
 
 class RAGTextRequest(BaseModel):
@@ -127,6 +137,7 @@ class MCPConfigRequest(BaseModel):
     server_command: List[str] | str = Field(default_factory=list)
     server_args: List[str] | str = Field(default_factory=list)
     env: Dict[str, str] | str = Field(default_factory=dict)
+    cwd: Optional[str] = None
     enabled: bool = True
 
 
@@ -177,21 +188,153 @@ class ResearchResponse(BaseModel):
 
 
 MAX_ATTACHMENT_CONTEXT_CHARS = 120_000
+BASE_DIR = Path(__file__).resolve().parents[1]
+WORK_TEMP_DIR = BASE_DIR / "work_temp"
+UPLOAD_DIR = WORK_TEMP_DIR / "uploads"
+DOWNLOAD_DIR = WORK_TEMP_DIR / "downloads"
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+MCP_WORKSPACE_LOCK = threading.Lock()
 
 
-def format_attachment_context(attachments: Optional[List[ResearchAttachment]]) -> str:
-    if not attachments:
+def ensure_work_dirs() -> None:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def safe_filename(filename: str) -> str:
+    return Path(filename or "attachment").name.replace("/", "_").replace("\\", "_") or "attachment"
+
+
+def unique_path(directory: Path, filename: str) -> Path:
+    target = directory / safe_filename(filename)
+    if not target.exists():
+        return target
+    stem = target.stem or "file"
+    suffix = target.suffix
+    counter = 1
+    while True:
+        candidate = directory / f"{stem}_{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def safe_session_id(value: str) -> str:
+    safe_value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return safe_value.strip("._") or datetime.now().strftime("%Y%m%d%H%M%S%f")
+
+
+def get_download_session_dir(session_id: str) -> Path:
+    return DOWNLOAD_DIR / safe_session_id(session_id)
+
+
+def rewrite_workspace_arg(values: List[str], workspace: str) -> None:
+    try:
+        index = values.index("--workspace")
+    except ValueError:
+        return
+    if index + 1 < len(values):
+        values[index + 1] = workspace
+
+
+def quote_download_path(relative: str) -> str:
+    return quote(relative, safe="/")
+
+
+def list_download_files(session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    ensure_work_dirs()
+    base_dir = get_download_session_dir(session_id) if session_id else DOWNLOAD_DIR
+    if not base_dir.exists():
+        return []
+    files: List[Dict[str, Any]] = []
+    for path in sorted(base_dir.rglob("*"), key=lambda item: item.stat().st_mtime, reverse=True):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(DOWNLOAD_DIR).as_posix()
+        session_relative = path.relative_to(base_dir).as_posix()
+        files.append({
+            "name": path.name,
+            "path": relative,
+            "session_path": session_relative,
+            "size": path.stat().st_size,
+            "url": f"/downloads/{quote_download_path(relative)}",
+            "is_image": path.suffix.lower() in IMAGE_SUFFIXES,
+        })
+    return files
+
+
+def normalize_download_relative_path(relative_path: str) -> str:
+    decoded = unquote(relative_path or "")
+    if not decoded or decoded.startswith("/"):
+        raise HTTPException(status_code=404, detail="Download file not found")
+    normalized = Path(decoded).as_posix()
+    if normalized == "." or normalized.startswith("../") or "/../" in normalized:
+        raise HTTPException(status_code=404, detail="Download file not found")
+    return normalized
+
+
+def resolve_download_path(relative_path: str) -> Path:
+    ensure_work_dirs()
+    normalized = normalize_download_relative_path(relative_path)
+    target = (DOWNLOAD_DIR / normalized).resolve()
+    if not target.is_file() or DOWNLOAD_DIR.resolve() not in target.parents:
+        raise HTTPException(status_code=404, detail="Download file not found")
+    return target
+
+
+def resolve_upload_path(relative_path: str) -> Path:
+    ensure_work_dirs()
+    target = (UPLOAD_DIR / relative_path).resolve()
+    if not target.is_file() or UPLOAD_DIR.resolve() not in target.parents:
+        raise HTTPException(status_code=404, detail="Upload file not found")
+    return target
+
+
+def format_download_image_markdown(files: List[Dict[str, Any]]) -> str:
+    image_lines = [f"![{item['name']}]({item['url']})" for item in files if item.get("is_image")]
+    if not image_lines:
         return ""
+    return "\n\n" + "\n\n".join(image_lines)
 
+
+def format_download_links_markdown(files: List[Dict[str, Any]]) -> str:
+    if not files:
+        return ""
+    lines = ["\n\n### 下载文件"]
+    for item in files:
+        name = item.get("name") or item.get("path") or "download"
+        url = item.get("url")
+        if url:
+            lines.append(f"- [{name}]({url})")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def format_attachment_context(
+    attachments: Optional[List[ResearchAttachment]],
+    output_dir: Optional[Path] = None,
+) -> str:
     parts: List[str] = []
+    if output_dir:
+        parts.append(
+            "Output directory for generated files in this turn:\n"
+            f"{output_dir}\n"
+            "All generated result files, tables, and figures must be written to this directory."
+        )
+
+    if not attachments:
+        return "\n\n".join(parts)
+
     for index, attachment in enumerate(attachments, start=1):
         content = (attachment.content or "").strip()
-        if not content:
+        saved_note = f"\nSaved upload path: {attachment.saved_path}" if attachment.saved_path else ""
+        saved_url_note = f"\nSaved upload URL: {attachment.saved_url}" if attachment.saved_url else ""
+        if not content and not saved_note:
             continue
 
         truncated_note = " (truncated)" if attachment.truncated else ""
         parts.append(
-            f"Attachment {index}: {attachment.filename}{truncated_note}\n"
+            f"Attachment {index}: {attachment.filename}{truncated_note}"
+            f"{saved_note}{saved_url_note}\n"
             f"{content[:MAX_ATTACHMENT_CONTEXT_CHARS]}"
         )
 
@@ -306,6 +449,7 @@ def create_app() -> FastAPI:
                 "server_command": parse_lines(payload.server_command),
                 "server_args": parse_lines(payload.server_args),
                 "env": parse_env(payload.env),
+                "cwd": payload.cwd,
                 "enabled": payload.enabled,
             })
             reload_agent_config()
@@ -505,29 +649,50 @@ def create_app() -> FastAPI:
     @app.post("/attachments/parse", response_model=AttachmentParseResponse)
     def parse_chat_attachment(file: UploadFile = File(...)) -> AttachmentParseResponse:
         try:
-            size = getattr(file, "size", None)
-            if size is None and hasattr(file.file, "seek") and hasattr(file.file, "tell"):
-                current_position = file.file.tell()
-                file.file.seek(0, 2)
-                size = file.file.tell()
-                file.file.seek(current_position)
+            ensure_work_dirs()
+            filename = safe_filename(file.filename or "attachment")
+            saved_file = unique_path(UPLOAD_DIR, filename)
+            if hasattr(file.file, "seek"):
+                file.file.seek(0)
+            with saved_file.open("wb") as output:
+                shutil.copyfileobj(file.file, output)
+            size = saved_file.stat().st_size
 
+            if hasattr(file.file, "seek"):
+                file.file.seek(0)
             content = (app.state.bio_agent.parse_upload(file=file) or "").strip()
             truncated = len(content) > MAX_ATTACHMENT_CONTEXT_CHARS
             if truncated:
                 content = content[:MAX_ATTACHMENT_CONTEXT_CHARS]
 
+            relative = saved_file.relative_to(UPLOAD_DIR).as_posix()
             return AttachmentParseResponse(
-                filename=file.filename or "attachment",
+                filename=filename,
                 content=content,
                 content_type=file.content_type,
                 size=size,
                 chars=len(content),
                 truncated=truncated,
+                saved_path=str(saved_file),
+                saved_url=f"/uploads/{quote(relative, safe='/')}",
             )
         except Exception as exc:
             logger.exception("Attachment parsing failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/uploads/{file_path:path}")
+    def get_upload_file(file_path: str) -> FileResponse:
+        target = resolve_upload_path(file_path)
+        return FileResponse(target, filename=target.name)
+
+    @app.get("/downloads")
+    def get_downloads(session_id: Optional[str] = None) -> Dict[str, Any]:
+        return {"files": list_download_files(session_id)}
+
+    @app.get("/downloads/{file_path:path}")
+    def get_download_file(file_path: str) -> FileResponse:
+        target = resolve_download_path(file_path)
+        return FileResponse(target, filename=target.name)
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(payload: ChatRequest) -> ChatResponse:
@@ -601,35 +766,120 @@ def create_app() -> FastAPI:
             response_parts: List[str] = []
             status = "success"
             saved = False
-            file_context = format_attachment_context(payload.attachments)
+            conversation_id = app.state.mysql_store.save_conversation(
+                username=payload.username,
+                request_text=payload.topic,
+                response_text=None,
+                conversation_type="research_stream",
+                history=payload.history or [],
+                status="running",
+            )
+            session_id = str(conversation_id)
+            session_download_dir = get_download_session_dir(session_id)
+            session_download_dir.mkdir(parents=True, exist_ok=True)
+            file_context = format_attachment_context(payload.attachments, output_dir=session_download_dir)
             try:
-                for event in app.state.bio_agent.run_research_stream(
-                    payload.username,
-                    payload.topic,
-                    payload.history,
-                    file_context=file_context,
-                ):
-                    event_type = event.get("type")
-                    content = event.get("content")
-                    if event_type in {"message", "message_chunk"} and content:
-                        response_parts.append(str(content))
-                    if event_type == "error":
-                        status = "failed"
-                    if event_type == "done":
-                        response_text = "".join(response_parts)
-                        saved_history = [*(payload.history or []), {"role": "assistant", "content": response_text}]
-                        conversation_id = app.state.mysql_store.save_conversation(
-                            username=payload.username,
-                            request_text=payload.topic,
-                            response_text=response_text,
-                            conversation_type="research_stream",
-                            history=saved_history,
-                            status=status,
+                with MCP_WORKSPACE_LOCK:
+                    previous_mcp_state: Dict[str, Dict[str, Any]] = {}
+                    for item in app.state.bio_agent.admin_config.get("mcp", []):
+                        name = item.get("name", "")
+                        env = item.get("env") or {}
+                        if isinstance(env, dict):
+                            previous_mcp_state.setdefault(name, {})["config_project_path"] = env.get("PROJECT_PATH")
+                            if "PROJECT_PATH" in env:
+                                env["PROJECT_PATH"] = str(session_download_dir)
+
+                        server_args = item.get("server_args") or []
+                        if isinstance(server_args, list):
+                            previous_mcp_state.setdefault(name, {})["config_server_args"] = list(server_args)
+                            rewrite_workspace_arg(server_args, str(session_download_dir))
+
+                        service = app.state.bio_agent.mcp_services.get(name, {})
+                        tool = service.get("tool")
+                        if not tool:
+                            continue
+
+                        previous_mcp_state.setdefault(name, {})["tool_env"] = dict(getattr(tool, "env", {}) or {})
+                        previous_mcp_state.setdefault(name, {})["tool_server_command"] = list(getattr(tool, "server_command", []) or [])
+                        if hasattr(tool, "env") and "PROJECT_PATH" in tool.env:
+                            tool.env["PROJECT_PATH"] = str(session_download_dir)
+                        if hasattr(tool, "server_command"):
+                            rewrite_workspace_arg(tool.server_command, str(session_download_dir))
+
+                    script_tool = getattr(app.state.bio_agent, "python_script_tool", None)
+                    previous_script_output_dir = getattr(script_tool, "output_dir", None) if script_tool else None
+                    try:
+                        if script_tool:
+                            script_tool.set_output_dir(str(session_download_dir))
+
+                        stream_events = app.state.bio_agent.run_research_stream(
+                            payload.username,
+                            payload.topic,
+                            payload.history,
+                            file_context=file_context,
                         )
-                        saved = True
-                        saved_payload = {"type": "conversation_saved", "id": conversation_id}
-                        yield f"data: {json.dumps(saved_payload, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        for event in stream_events:
+                            event_type = event.get("type")
+                            content = event.get("content")
+                            if event_type in {"message", "message_chunk"} and content:
+                                response_parts.append(str(content))
+                            if event_type == "error":
+                                status = "failed"
+                            if event_type == "done":
+                                download_files = list_download_files(session_id)
+                                image_markdown = format_download_image_markdown(download_files)
+                                links_markdown = format_download_links_markdown(download_files)
+                                response_text = "".join(response_parts)
+                                if links_markdown and links_markdown not in response_text:
+                                    response_text = f"{response_text}{links_markdown}"
+                                    response_parts.append(links_markdown)
+                                    yield f"data: {json.dumps({'type': 'message', 'content': links_markdown, 'agent': 'automation_agent', 'agent_name': '自动化执行专家'}, ensure_ascii=False)}\n\n"
+                                if image_markdown and image_markdown not in response_text:
+                                    response_text = f"{response_text}{image_markdown}"
+                                    response_parts.append(image_markdown)
+                                    yield f"data: {json.dumps({'type': 'message', 'content': image_markdown, 'agent': 'automation_agent', 'agent_name': '自动化执行专家'}, ensure_ascii=False)}\n\n"
+                                if download_files:
+                                    files_payload = {"type": "files", "files": download_files, "session_id": session_id}
+                                    yield f"data: {json.dumps(files_payload, ensure_ascii=False)}\n\n"
+                                saved_history = [*(payload.history or []), {"role": "assistant", "content": response_text}]
+                                app.state.mysql_store.update_conversation(
+                                    conversation_id=conversation_id,
+                                    response_text=response_text,
+                                    history=saved_history,
+                                    metadata={"download_session_id": session_id, "download_files": download_files},
+                                    status=status,
+                                )
+                                saved = True
+                                saved_payload = {"type": "conversation_saved", "id": conversation_id, "download_session_id": session_id, "download_files": download_files}
+                                yield f"data: {json.dumps(saved_payload, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    finally:
+                        for item in app.state.bio_agent.admin_config.get("mcp", []):
+                            name = item.get("name", "")
+                            state = previous_mcp_state.get(name, {})
+                            env = item.get("env") or {}
+                            if isinstance(env, dict) and "config_project_path" in state:
+                                if state["config_project_path"] is None:
+                                    env.pop("PROJECT_PATH", None)
+                                else:
+                                    env["PROJECT_PATH"] = state["config_project_path"]
+                            if isinstance(item.get("server_args"), list) and "config_server_args" in state:
+                                item["server_args"] = state["config_server_args"]
+
+                            service = app.state.bio_agent.mcp_services.get(name, {})
+                            tool = service.get("tool")
+                            if not tool:
+                                continue
+                            if "tool_env" in state:
+                                tool.env = state["tool_env"]
+                            if "tool_server_command" in state:
+                                tool.server_command = state["tool_server_command"]
+                        if script_tool and previous_script_output_dir is not None:
+                            script_tool.set_output_dir(str(previous_script_output_dir))
+            except GeneratorExit:
+                status = "interrupted"
+                logger.info("Research stream interrupted by client disconnect")
+                raise
             except Exception as exc:
                 status = "failed"
                 logger.exception("Streaming research failed")
@@ -641,12 +891,12 @@ def create_app() -> FastAPI:
                     return
                 response_text = "".join(response_parts)
                 saved_history = [*(payload.history or []), {"role": "assistant", "content": response_text}]
-                app.state.mysql_store.save_conversation(
-                    username=payload.username,
-                    request_text=payload.topic,
+                download_files = list_download_files(session_id)
+                app.state.mysql_store.update_conversation(
+                    conversation_id=conversation_id,
                     response_text=response_text,
-                    conversation_type="research_stream",
                     history=saved_history,
+                    metadata={"download_session_id": session_id, "download_files": download_files},
                     status=status,
                 )
 

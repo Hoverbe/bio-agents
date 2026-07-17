@@ -45,10 +45,10 @@ AUTOMATION_AGENT_PROMPT = """
 
 你具备以下5种核心能力，请根据【任务描述】选择最合适的能力执行：
 1. **parse_document（解析文档）**：当任务要求从用户上传的文件（PDF、TXT等）中提取文本、表格或特定信息时使用。
-2. **call_mcp_service（调用MCP服务）**：当任务要求查询外部系统、内部数据库或调用特定API时使用（需明确指定服务名和参数）。
+2. **MCP工具调用**：当任务要求查询外部系统、科学数据库或运行生物信息学工作流时使用真实的展开工具名。
 3. **execute_skill（执行预设Skill）**：当任务匹配公司已有的流程化工作流（如引物设计、质粒核对）时使用（需指定Skill名称和所需参数）。
-4. **write_run_script（编写执行脚本）**：当任务涉及定制化的数据处理、格式转换、批量操作，且无法通过上述方式直接完成时，请编写Python/Bash脚本在沙箱中执行。
-5. **terminal（终端命令）**：当任务需要在终端执行安全的只读命令（如查看文件、搜索内容、统计信息等）时使用。
+4. **python_script（执行Python脚本）**：当任务需要读取本地上传文件、做通用表格统计/数据清洗/格式转换/绘图，或需要把结果表格和图片写入本轮输出目录时，优先调用 python_script 执行脚本；不要把脚本源码直接回复给用户。
+5. **terminal（终端命令）**：当任务只需要查看文件、搜索内容、统计信息等只读命令时使用。
 
 ## 可用工具
 
@@ -57,6 +57,20 @@ AUTOMATION_AGENT_PROMPT = """
 ## 工具调用格式
 当你决定调用工具时，只输出一行工具调用标记，且必须严格使用 `[TOOL_CALL:工具名称:参数]`。
 不要输出 `TOOL CALL:...`、自然语言说明、Markdown 表格或代码块；工具执行结果会由系统自动返回给你。
+
+### python_script 工具调用格式
+当任务需要读取本地上传文件、分析 TSV/CSV/Excel、生成统计表或图表、或把结果文件写入下载目录时，优先使用 python_script。脚本中通过环境变量读取输出目录：
+- `BIO_AGENT_OUTPUT_DIR`：本轮会话生成文件目录，所有统计表和图片必须写入这里
+- `BIO_AGENT_WORKSPACE`：工作区根目录
+
+必须使用 JSON 参数格式，避免脚本中的逗号、换行被解析错误：
+`[TOOL_CALL:python_script:{{"script":"import os\\noutput_dir=os.environ['BIO_AGENT_OUTPUT_DIR']\\nprint(output_dir)"}}]`
+
+要求：
+- 不要把 Python 源码直接回复给用户；只输出工具调用标记。
+- 上传文件路径以任务描述中的 `Saved upload path` 为准，不要猜测路径。
+- 生成图片请保存为 png/jpg/svg，生成表格请保存为 csv/tsv/xlsx。
+- 脚本执行后，最终回答要说明关键统计结果和生成的文件名。
 
 ### web_search 工具调用格式
 当你需要联网搜索最新/实时信息时，请使用以下格式：
@@ -74,12 +88,16 @@ AUTOMATION_AGENT_PROMPT = """
   - info：查看工具信息和支持的命令
   - help：查看使用帮助
 ### MCP服务调用格式
-当你需要调用MCP服务时，请使用展开后的工具名称，格式如下：
+当任务涉及生物信息学流程、科学数据库检索、药物/疾病/靶点/序列/组学分析，或需要借助专业生物信息学工具完成判断/检索/工作流时，优先使用 MCP 工具，不要改用 terminal 或只做文字说明。
+如果任务同时包含专业生物分析和本地文件统计/绘图，可以先用 MCP 做工具检索、分析规划或专业计算，再用 python_script 读取上传文件并把表格/图片写入输出目录。
+调用 MCP 服务时必须使用展开后的真实工具名称，格式如下：
 `[TOOL_CALL:工具名称:参数]`
 
 参数说明：
-- 工具名称：直接使用上面列出的工具名称（如 bioinformatics_search_genes）
-- 参数：使用 key=value 格式，多个参数用逗号分隔
+- BioNext 工作流 MCP 的工具名前缀是 `bionext_`，例如 `bionext_analyze_bioinformatics_task`、`bionext_execute_claude_script`、`bionext_debug_workflow`
+- ToolUniverse MCP 的工具名前缀是 `tooluniverse_`，通常先用 `tooluniverse_find_tools` / `tooluniverse_grep_tools` / `tooluniverse_get_tool_info` 查找合适工具，再用 `tooluniverse_execute_tool` 执行
+- 不要使用 `call_mcp_service`、`bionext`、`tooluniverse`、`bioinformatics_search_genes` 这类不存在的泛化工具名
+- 参数使用 key=value 格式，多个参数用逗号分隔；复杂参数可以使用 JSON 字符串
 
 ### 使用示例
 
@@ -98,9 +116,11 @@ AUTOMATION_AGENT_PROMPT = """
 
 ## 重要提示
 - terminal工具仅支持只读操作，严禁尝试执行危险命令（如rm、del、mv、cp等）
+- 需要生成文件、写入统计表或绘图时，不要使用 terminal，优先使用 python_script 写入 `BIO_AGENT_OUTPUT_DIR`。
+- 生物信息学、科学数据库、序列/基因/蛋白/药物/疾病/靶点/组学相关任务优先考虑 `bionext_...` 或 `tooluniverse_...` 展开工具；需要本地落盘时可组合使用 python_script。
+- 所有生成文件必须写入 `BIO_AGENT_OUTPUT_DIR` 指向的本轮输出目录。
 - 所有命令必须在指定的工作目录内执行
 - 如果遇到权限或路径限制，请调整任务策略
-- **bioinformatics MCP 工具已展开为独立工具，必须使用完整的工具名称（如 bioinformatics_search_genes），不要使用 service/method 格式**
 - MCP服务需要在系统中正确安装和配置才能使用
 
 执行原则：

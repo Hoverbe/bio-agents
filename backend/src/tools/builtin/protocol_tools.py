@@ -9,6 +9,7 @@
 
 from typing import Dict, Any, List, Optional
 from backend.src.tools.base import Tool, ToolParameter
+import json
 import os
 
 # MCP服务器环境变量映射表
@@ -61,7 +62,8 @@ class MCPTool(Tool):
                  server: Optional[Any] = None,
                  auto_expand: bool = True,
                  env: Optional[Dict[str, str]] = None,
-                 env_keys: Optional[List[str]] = None):
+                 env_keys: Optional[List[str]] = None,
+                 cwd: Optional[str] = None):
         """
         初始化 MCP 工具
 
@@ -111,6 +113,7 @@ class MCPTool(Tool):
         self._available_tools = []
         self.auto_expand = auto_expand
         self.prefix = f"{name}_" if auto_expand else ""
+        self.cwd = cwd
 
         # 环境变量处理（优先级：env > env_keys > 自动检测）
         self.env = self._prepare_env(env, env_keys, server_command)
@@ -248,7 +251,7 @@ class MCPTool(Tool):
 
             async def discover():
                 client_source = self.server if self.server else self.server_command
-                async with MCPClient(client_source, self.server_args, env=self.env) as client:
+                async with MCPClient(client_source, self.server_args, env=self.env, cwd=self.cwd) as client:
                     tools = await client.list_tools()
                     return tools
 
@@ -376,7 +379,7 @@ class MCPTool(Tool):
                     # 使用外部服务器命令
                     client_source = self.server_command
 
-                async with MCPClient(client_source, self.server_args, env=self.env) as client:
+                async with MCPClient(client_source, self.server_args, env=self.env, cwd=self.cwd) as client:
                     if action == "list_tools":
                         tools = await client.list_tools()
                         if not tools:
@@ -392,7 +395,23 @@ class MCPTool(Tool):
                         if not tool_name:
                             return "错误：必须指定 tool_name 参数"
                         result = await client.call_tool(tool_name, arguments)
-                        return f"工具 '{tool_name}' 执行结果:\n{result}"
+                        formatted_result: str
+                        if isinstance(result, dict) and set(result.keys()) == {"execution_result"}:
+                            formatted_result = str(result["execution_result"])
+                        elif isinstance(result, dict) and "execution_result" in result:
+                            result = dict(result)
+                            execution_result = result.get("execution_result")
+                            if isinstance(execution_result, str):
+                                try:
+                                    result["execution_result"] = json.loads(execution_result)
+                                except json.JSONDecodeError:
+                                    pass
+                            formatted_result = json.dumps(result, ensure_ascii=False, indent=2)
+                        elif isinstance(result, (dict, list)):
+                            formatted_result = json.dumps(result, ensure_ascii=False, indent=2)
+                        else:
+                            formatted_result = str(result)
+                        return f"工具 '{tool_name}' 执行结果:\n{formatted_result}"
 
                     elif action == "list_resources":
                         resources = await client.list_resources()

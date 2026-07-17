@@ -367,8 +367,16 @@
               <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8.5 10h.01M15.5 10h.01M8 14c1.1 1.3 2.4 2 4 2s2.9-.7 4-2" />
             </svg>
           </button>
-          <button class="send-btn" type="submit" :disabled="loading || attachmentStatus === 'uploading' || !canSend">
-            <svg viewBox="0 0 24 24" width="20" height="20">
+          <button
+            :class="['send-btn', { interrupting: loading }]"
+            type="submit"
+            :aria-label="loading ? '中断回复' : '发送消息'"
+            :disabled="attachmentStatus === 'uploading' || (!loading && !canSend)"
+          >
+            <svg v-if="loading" viewBox="0 0 24 24" width="20" height="20">
+              <path d="M8 8h8v8H8z" stroke="currentColor" stroke-width="2" fill="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <svg v-else viewBox="0 0 24 24" width="20" height="20">
               <path d="M22 2L11 13l3 5H2l8-10 2 2v8z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </button>
@@ -383,7 +391,7 @@
         </header>
         
         <!-- 任务列表 -->
-        <div class="task-list">
+        <div :class="['task-list', { 'with-downloads': downloadFiles.length > 0 }]">
           <div
             v-for="task in taskList"
             :key="task.id"
@@ -404,7 +412,7 @@
               <div class="progress-bar"></div>
             </div>
           </div>
-          
+
           <div v-if="taskList.length === 0" class="empty-task-list">
             <svg viewBox="0 0 24 24" width="48" height="48">
               <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
@@ -413,6 +421,30 @@
             <p class="empty-hint">发送消息后，任务将显示在这里</p>
           </div>
         </div>
+
+        <section v-if="downloadFiles.length > 0" class="download-panel">
+          <header class="download-panel-header">
+            <h3>下载文件</h3>
+            <span class="task-count">{{ downloadFiles.length }} 个文件</span>
+          </header>
+          <div class="download-list">
+            <a
+              v-for="file in downloadFiles"
+              :key="file.path"
+              class="download-item"
+              :href="getFileUrl(file.url)"
+              :download="file.name"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span class="download-icon">{{ file.is_image ? "图" : "文" }}</span>
+              <span class="download-info">
+                <strong>{{ file.name }}</strong>
+                <small>{{ formatBytes(file.size) }}</small>
+              </span>
+            </a>
+          </div>
+        </section>
       </aside>
       </template>
     </div>
@@ -424,11 +456,13 @@ import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from "vue"
 import {
   deleteConversation,
   getConversationHistory,
+  getFileUrl,
   getVoiceWsUrl,
   isVoiceWsSecure,
   parseAttachmentFile,
   runResearchStream,
   type ConversationRecord,
+  type DownloadFile,
   type ParsedAttachment
 } from "./services/api";
 import AdminPanel from "./components/AdminPanel.vue";
@@ -448,6 +482,8 @@ interface Chat {
   messages: Message[];
   lastMessage: string;
   timestamp: string;
+  downloadSessionId?: string;
+  downloadFiles?: DownloadFile[];
 }
 
 interface TaskItem {
@@ -484,11 +520,13 @@ const mobileCallVisible = ref(false);
 const mobileMuted = ref(false);
 const mobilePrivate = ref(false);
 const mobileSpeaker = ref(true);
+const researchAbortController = ref<AbortController | null>(null);
 const voiceElapsedSeconds = ref(0);
 let voiceElapsedTimer = 0;
 
 // 任务清单
 const taskList = ref<TaskItem[]>([]);
+const downloadFiles = ref<DownloadFile[]>([]);
 
 type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "interrupted";
 const voiceState = ref<VoiceState>("idle");
@@ -594,6 +632,7 @@ const mobileTranscript = computed(() => {
 });
 
 function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
   if (!bytes) return "已解析";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -611,11 +650,18 @@ function escapeHtml(value: string): string {
 
 function renderInlineMarkdown(value: string): string {
   return escapeHtml(value)
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_match, alt, src) => {
+      const safeSrc = getFileUrl(src);
+      return `<img src="${safeSrc}" alt="${alt}" loading="lazy" />`;
+    })
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_match, label, href) => {
+      const safeHref = getFileUrl(href);
+      return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    })
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/__([^_]+)__/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-    .replace(/_([^_]+)_/g, "<em>$1</em>");
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
 }
 
 function renderMarkdown(content: string): string {
@@ -791,6 +837,15 @@ function insertEmoji(emoji: string) {
   });
 }
 
+function syncCurrentChatDownloads(files: DownloadFile[], sessionId?: string) {
+  downloadFiles.value = files;
+  if (!currentChat.value) return;
+  currentChat.value.downloadFiles = files;
+  if (sessionId) {
+    currentChat.value.downloadSessionId = sessionId;
+  }
+}
+
 // 获取格式化时间
 function getTimeString(): string {
   const now = new Date();
@@ -873,6 +928,7 @@ function handleLogout() {
   chatHistory.value = [];
   currentChatIndex.value = -1;
   taskList.value = [];
+  downloadFiles.value = [];
   inputMessage.value = "";
   removeAttachment();
   emojiPickerOpen.value = false;
@@ -894,7 +950,8 @@ function startNewChat() {
   removeAttachment();
   emojiPickerOpen.value = false;
   taskList.value = [];
-  
+  downloadFiles.value = [];
+
   nextTick(() => {
     const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
     if (textarea) textarea.focus();
@@ -909,6 +966,7 @@ function switchChat(index: number) {
   removeAttachment();
   emojiPickerOpen.value = false;
   taskList.value = [];
+  downloadFiles.value = currentChat.value?.downloadFiles || [];
 
   nextTick(() => {
     const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
@@ -948,6 +1006,7 @@ async function deleteChat(index: number) {
   }
 
   taskList.value = [];
+  downloadFiles.value = currentChat.value?.downloadFiles || [];
   saveChatHistory();
 }
 
@@ -956,7 +1015,10 @@ function clearCurrentChat() {
   if (currentChat.value) {
     currentChat.value.messages = [];
     currentChat.value.lastMessage = "";
+    currentChat.value.downloadSessionId = undefined;
+    currentChat.value.downloadFiles = [];
     taskList.value = [];
+    downloadFiles.value = [];
     saveChatHistory();
   }
 }
@@ -1352,13 +1414,28 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", updateViewportMode);
+  interruptResearchStream();
   stopMobileCallTimer();
   stopVoiceCall(false);
 });
 
+function interruptResearchStream() {
+  if (!loading.value) return;
+  researchAbortController.value?.abort();
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 // 发送消息
 async function handleSend() {
-  if (!canSend.value || loading.value || attachmentStatus.value === "uploading" || !currentChat.value) {
+  if (loading.value) {
+    interruptResearchStream();
+    return;
+  }
+
+  if (!canSend.value || attachmentStatus.value === "uploading" || !currentChat.value) {
     return;
   }
 
@@ -1385,7 +1462,10 @@ async function handleSend() {
   inputMessage.value = "";
   emojiPickerOpen.value = false;
   loading.value = true;
+  const abortController = new AbortController();
+  researchAbortController.value = abortController;
   taskList.value = [];
+  syncCurrentChatDownloads([], undefined);
 
   await nextTick();
   scrollToBottom();
@@ -1407,16 +1487,23 @@ async function handleSend() {
               filename: attachment.filename,
               content: attachment.content,
               content_type: attachment.content_type,
-              truncated: attachment.truncated
+              truncated: attachment.truncated,
+              saved_path: attachment.saved_path,
+              saved_url: attachment.saved_url
             }]
           : undefined
       },
       (event) => {
         handleStreamEvent(event);
-      }
+      },
+      { signal: abortController.signal }
     );
     if (attachment) removeAttachment();
   } catch (err) {
+    if (isAbortError(err)) {
+      return;
+    }
+
     const errorMessage: Message = {
       content: err instanceof Error ? err.message : "发送消息失败，请重试",
       isUser: false,
@@ -1425,6 +1512,9 @@ async function handleSend() {
     currentChat.value.messages.push(errorMessage);
     currentChat.value.lastMessage = "发送失败";
   } finally {
+    if (researchAbortController.value === abortController) {
+      researchAbortController.value = null;
+    }
     loading.value = false;
     saveChatHistory();
     
@@ -1540,9 +1630,20 @@ function handleStreamEvent(event: any) {
       }
       break;
 
+    case "files":
+      if (Array.isArray(event.files)) {
+        syncCurrentChatDownloads(event.files, typeof event.session_id === "string" ? event.session_id : undefined);
+      }
+      break;
+
     case "conversation_saved":
       if (currentChat.value && typeof event.id === "number") {
         currentChat.value.id = event.id;
+        if (Array.isArray(event.download_files)) {
+          syncCurrentChatDownloads(event.download_files, typeof event.download_session_id === "string" ? event.download_session_id : undefined);
+        } else if (typeof event.download_session_id === "string") {
+          currentChat.value.downloadSessionId = event.download_session_id;
+        }
         saveChatHistory();
       }
       break;
@@ -1610,12 +1711,17 @@ function recordToChat(record: ConversationRecord): Chat {
         ...(record.response_text ? [{ content: record.response_text, isUser: false, timestamp: getTimeString() }] : [])
       ];
   const lastMessage = messages[messages.length - 1]?.content || "";
+  const recordDownloadFiles = Array.isArray(record.metadata_json?.download_files)
+    ? record.metadata_json.download_files
+    : [];
   return {
     id: record.id,
     title: record.request_text.slice(0, 20) + (record.request_text.length > 20 ? "..." : ""),
     messages,
     lastMessage: lastMessage.slice(0, 30) + (lastMessage.length > 30 ? "..." : ""),
-    timestamp: formatRecordDate(record.created_at)
+    timestamp: formatRecordDate(record.created_at),
+    downloadSessionId: record.metadata_json?.download_session_id,
+    downloadFiles: recordDownloadFiles
   };
 }
 
@@ -2489,10 +2595,25 @@ textarea {
   background: rgba(15, 23, 42, 0.08);
 }
 
-.message-markdown :deep(pre code) {
-  padding: 0;
-  background: transparent;
-  white-space: pre;
+.message-markdown :deep(img) {
+  display: block;
+  max-width: min(100%, 520px);
+  max-height: 360px;
+  margin: 10px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  object-fit: contain;
+  background: #ffffff;
+}
+
+.message-markdown :deep(a) {
+  color: #2563eb;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.message-markdown :deep(a:hover) {
+  text-decoration: underline;
 }
 
 .is-user .message-content p {
@@ -2705,6 +2826,19 @@ textarea {
   transform: rotate(-45deg);
 }
 
+.send-btn.interrupting {
+  background: #b42318;
+  box-shadow: 0 12px 28px rgba(180, 35, 24, 0.22);
+}
+
+.send-btn.interrupting:hover:not(:disabled) {
+  box-shadow: 0 14px 30px rgba(180, 35, 24, 0.3);
+}
+
+.send-btn.interrupting svg {
+  transform: none;
+}
+
 .send-btn svg path {
   stroke-width: 2.4;
 }
@@ -2790,6 +2924,95 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.task-list.with-downloads {
+  flex: 1 1 50%;
+  min-height: 0;
+}
+
+.download-panel {
+  flex: 1 1 50%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(241, 245, 249, 0.62);
+}
+
+.download-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.download-panel-header h3 {
+  margin: 0;
+  font-size: 15px;
+  color: #1e293b;
+}
+
+.download-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.download-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #1f2937;
+  text-decoration: none;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.download-item:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
+.download-icon {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.download-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.download-info strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #1e293b;
+}
+
+.download-info small {
+  font-size: 12px;
+  color: #64748b;
 }
 
 .task-item {
@@ -3528,6 +3751,10 @@ textarea {
 
   .send-btn svg {
     transform: rotate(-45deg);
+  }
+
+  .send-btn.interrupting svg {
+    transform: none;
   }
 
   .send-btn svg path {

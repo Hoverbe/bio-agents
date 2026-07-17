@@ -28,11 +28,21 @@ export interface ResearchAttachment {
   content: string;
   content_type?: string | null;
   truncated?: boolean;
+  saved_path?: string | null;
+  saved_url?: string | null;
 }
 
 export interface ParsedAttachment extends ResearchAttachment {
   size?: number | null;
   chars: number;
+}
+
+export interface DownloadFile {
+  name: string;
+  path: string;
+  size: number;
+  url: string;
+  is_image: boolean;
 }
 
 export interface ResearchStreamEvent {
@@ -46,6 +56,11 @@ export interface ConversationRecord {
   request_text: string;
   response_text?: string | null;
   history_json?: Array<{ role: string; content: string }> | null;
+  metadata_json?: {
+    download_session_id?: string;
+    download_files?: DownloadFile[];
+    [key: string]: unknown;
+  } | null;
   status: string;
   created_at?: string | null;
   updated_at?: string | null;
@@ -149,6 +164,16 @@ export function parseAttachmentFile(file: File): Promise<ParsedAttachment> {
     }
     return response.json();
   });
+}
+
+export function getFileUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${baseURL}${url.startsWith("/") ? url : `/${url}`}`;
+}
+
+export function listDownloadFiles(sessionId?: string): Promise<{ files: DownloadFile[] }> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  return requestJSON(`/downloads${query}`);
 }
 
 export function startRAGDocument(source: string, namespace = "default"): Promise<any> {

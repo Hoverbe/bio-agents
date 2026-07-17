@@ -167,6 +167,34 @@ class MySQLStore:
                 )
                 return int(cursor.lastrowid)
 
+    def update_conversation(
+        self,
+        conversation_id: int,
+        response_text: Optional[str] = None,
+        history: Optional[list[Dict[str, str]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        status: str = "success",
+    ) -> None:
+        with self.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE conversations
+                    SET response_text = %s,
+                        history_json = %s,
+                        metadata_json = %s,
+                        status = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        response_text,
+                        json.dumps(history, ensure_ascii=False) if history is not None else None,
+                        json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
+                        status,
+                        conversation_id,
+                    ),
+                )
+
     def list_conversations(self, username: str, limit: int = 50) -> List[Dict[str, Any]]:
         clean_username = username.strip()
         if not clean_username:

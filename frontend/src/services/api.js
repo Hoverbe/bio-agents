@@ -87,6 +87,15 @@ export function parseAttachmentFile(file) {
         return response.json();
     });
 }
+export function getFileUrl(url) {
+    if (/^https?:\/\//i.test(url))
+        return url;
+    return `${baseURL}${url.startsWith("/") ? url : `/${url}`}`;
+}
+export function listDownloadFiles(sessionId) {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return requestJSON(`/downloads${query}`);
+}
 export function startRAGDocument(source, namespace = "default") {
     const formData = new FormData();
     formData.append("source", source);
