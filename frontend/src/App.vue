@@ -496,6 +496,9 @@ interface TaskItem {
   dependency?: number;
 }
 
+const USERNAME_COOKIE_NAME = "bioagent_username";
+const USERNAME_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
+
 // 登录状态
 const isLoggedIn = ref(false);
 const username = ref("");
@@ -888,19 +891,43 @@ function getAgentAvatarText(agent?: string): string {
   return agentTextMap[agent || ''] || '助';
 }
 
+function getSavedUsername(): string {
+  const cookie = document.cookie
+    .split("; ")
+    .find((item) => item.startsWith(`${USERNAME_COOKIE_NAME}=`));
+  if (!cookie) return "";
+
+  try {
+    return decodeURIComponent(cookie.split("=").slice(1).join("="));
+  } catch {
+    return "";
+  }
+}
+
+function saveUsernameCookie(value: string) {
+  document.cookie = `${USERNAME_COOKIE_NAME}=${encodeURIComponent(value)}; max-age=${USERNAME_COOKIE_MAX_AGE}; path=/; samesite=lax`;
+}
+
+function clearUsernameCookie() {
+  document.cookie = `${USERNAME_COOKIE_NAME}=; max-age=0; path=/; samesite=lax`;
+}
+
 // 登录处理
 async function handleLogin() {
-  if (!username.value.trim()) {
+  const cleanUsername = username.value.trim();
+  if (!cleanUsername) {
     error.value = "请输入用户名";
     return;
   }
 
+  username.value = cleanUsername;
   loading.value = true;
   error.value = "";
 
   try {
     await loadChatHistory();
-    
+    saveUsernameCookie(cleanUsername);
+
     isLoggedIn.value = true;
     
     if (chatHistory.value.length === 0) {
@@ -922,7 +949,8 @@ async function handleLogin() {
 // 退出登录
 function handleLogout() {
   saveChatHistory();
-  
+  clearUsernameCookie();
+
   isLoggedIn.value = false;
   username.value = "";
   chatHistory.value = [];
@@ -1410,6 +1438,12 @@ function playNextAudio() {
 onMounted(() => {
   updateViewportMode();
   window.addEventListener("resize", updateViewportMode);
+
+  const savedUsername = getSavedUsername();
+  if (savedUsername) {
+    username.value = savedUsername;
+    void handleLogin();
+  }
 });
 
 onBeforeUnmount(() => {
