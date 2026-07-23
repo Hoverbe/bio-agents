@@ -370,15 +370,18 @@
           <button
             :class="['voice-input-btn', voiceInputState, { active: voiceInputEnabled }]"
             type="button"
-            :aria-label="voiceInputEnabled ? '停止语音输入' : '开始语音输入'"
-            :title="voiceInputEnabled ? '停止语音输入' : '开始语音输入'"
+            :aria-label="voiceInputEnabled ? '松开发送语音' : '按住语音输入'"
+            :title="voiceInputEnabled ? '松开发送语音' : '按住语音输入'"
             :disabled="loading || attachmentStatus === 'uploading'"
-            @click="toggleVoiceInput"
+            @pointerdown="startVoiceInputPress"
+            @pointerup="finishVoiceInputPress"
+            @pointercancel="cancelVoiceInputPress"
+            @contextmenu.prevent
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 10v1a7 7 0 0 0 14 0v-1M12 18v3M8 21h8" />
             </svg>
-            <span>{{ voiceInputEnabled ? voiceInputStatus : '语音输入' }}</span>
+            <span>{{ voiceInputEnabled ? voiceInputStatus : '按住说话' }}</span>
           </button>
           <button
             :class="['send-btn', { interrupting: loading }]"
@@ -589,6 +592,9 @@ let speechStartSent = false;
 let closingVoiceCall = false;
 let voiceSessionMode: VoiceMode | null = null;
 let voiceSessionPlayAudio = true;
+let activeVoiceTurnId: number | null = null;
+let voiceInputPressMode = false;
+let voiceInputPointerId: number | null = null;
 let speechCandidateSince = 0;
 let attachmentDragDepth = 0;
 
@@ -1167,7 +1173,7 @@ function closeMobileCall() {
   }
 }
 
-async function toggleVoiceCall(mode: VoiceMode = "call") {
+async function toggleVoiceCall(mode: VoiceMode = "call", useVad = true) {
   if ((mode === "call" && voiceEnabled.value) || (mode === "input" && voiceInputEnabled.value)) {
     stopVoiceCall();
     return;
@@ -1211,7 +1217,7 @@ async function toggleVoiceCall(mode: VoiceMode = "call") {
   analyser.fftSize = 1024;
   source.connect(analyser);
 
-  const sessionId = `${username.value}-${Date.now()}`;
+  const sessionId = `${username.value}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   closingVoiceCall = false;
   voiceSessionMode = mode;
   voiceSessionPlayAudio = mode === "call";
@@ -1225,11 +1231,56 @@ async function toggleVoiceCall(mode: VoiceMode = "call") {
   voiceSocket.onerror = () => handleVoiceSocketClosed();
   voiceSocket.onclose = () => handleVoiceSocketClosed();
   setActiveVoiceState("listening");
-  startVadLoop();
+  if (useVad) {
+    startVadLoop();
+  } else {
+    startRecording();
+  }
 }
 
-async function toggleVoiceInput() {
-  await toggleVoiceCall("input");
+async function startVoiceInputPress(event: PointerEvent) {
+  event.preventDefault();
+  if (loading.value || attachmentStatus.value === "uploading" || voiceInputEnabled.value) return;
+  if (!currentChat.value) return;
+
+  const target = event.currentTarget as HTMLElement | null;
+  target?.setPointerCapture?.(event.pointerId);
+  voiceInputPointerId = event.pointerId;
+  voiceInputPressMode = true;
+  await toggleVoiceCall("input", false);
+
+  if (!voiceInputPressMode && voiceSessionMode === "input" && mediaRecorder?.state === "recording") {
+    stopRecording(true);
+  }
+}
+
+function finishVoiceInputPress(event: PointerEvent) {
+  event.preventDefault();
+  if (voiceInputPointerId !== null && event.pointerId !== voiceInputPointerId) return;
+
+  const target = event.currentTarget as HTMLElement | null;
+  target?.releasePointerCapture?.(event.pointerId);
+  voiceInputPointerId = null;
+  voiceInputPressMode = false;
+
+  if (voiceSessionMode !== "input") return;
+  if (mediaRecorder?.state === "recording") {
+    stopRecording(true);
+  }
+}
+
+function cancelVoiceInputPress(event: PointerEvent) {
+  event.preventDefault();
+  if (voiceInputPointerId !== null && event.pointerId !== voiceInputPointerId) return;
+
+  const target = event.currentTarget as HTMLElement | null;
+  target?.releasePointerCapture?.(event.pointerId);
+  voiceInputPointerId = null;
+  voiceInputPressMode = false;
+
+  if (voiceSessionMode === "input") {
+    stopVoiceCall(false);
+  }
 }
 
 function showVoiceNotice(message: string) {
@@ -1286,6 +1337,9 @@ function stopVoiceCall(sendInterrupt = true) {
   voiceSocket = null;
   voiceSessionMode = null;
   voiceSessionPlayAudio = true;
+  activeVoiceTurnId = null;
+  voiceInputPressMode = false;
+  voiceInputPointerId = null;
   speechStartSent = false;
 }
 
@@ -1305,6 +1359,9 @@ function handleVoiceSocketClosed() {
   setVoiceSessionFlags(null, false);
   voiceSessionMode = null;
   voiceSessionPlayAudio = true;
+  activeVoiceTurnId = null;
+  voiceInputPressMode = false;
+  voiceInputPointerId = null;
   speechStartSent = false;
   if (currentChat.value) {
     currentChat.value.messages.push({ content: `${getVoiceModeLabel(closedVoiceMode)}连接已断开，请重新点击${getVoiceModeLabel(closedVoiceMode)}。`, isUser: false, timestamp: getTimeString() });
@@ -1378,17 +1435,51 @@ function stopRecording(send: boolean) {
   mediaRecorder.stop();
 }
 
+function waitForVoiceSocketOpen(timeoutMs = 2500): Promise<boolean> {
+  if (voiceSocket?.readyState === WebSocket.OPEN) return Promise.resolve(true);
+  if (!voiceSocket || voiceSocket.readyState !== WebSocket.CONNECTING) return Promise.resolve(false);
+
+  const socket = voiceSocket;
+  return new Promise((resolve) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, timeoutMs);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      socket.removeEventListener("open", handleOpen);
+      socket.removeEventListener("close", handleClose);
+      socket.removeEventListener("error", handleClose);
+    };
+    const handleOpen = () => {
+      cleanup();
+      resolve(true);
+    };
+    const handleClose = () => {
+      cleanup();
+      resolve(false);
+    };
+    socket.addEventListener("open", handleOpen, { once: true });
+    socket.addEventListener("close", handleClose, { once: true });
+    socket.addEventListener("error", handleClose, { once: true });
+  });
+}
+
 async function sendRecordedAudio() {
   if (!recordingChunks.length) {
     speechStartSent = false;
     speechCandidateSince = 0;
+    if (voiceSessionMode === "input" && !voiceInputPressMode) stopVoiceCall(false);
     return;
   }
-  if (voiceSocket?.readyState !== WebSocket.OPEN) {
+  if (voiceSocket?.readyState !== WebSocket.OPEN && await waitForVoiceSocketOpen()) {
+    // Continue now that the socket is ready.
+  } else if (voiceSocket?.readyState !== WebSocket.OPEN) {
     showVoiceNotice("已检测到语音，但语音连接尚未就绪，请稍后再说一次。");
     recordingChunks = [];
     speechStartSent = false;
     speechCandidateSince = 0;
+    if (voiceSessionMode === "input") stopVoiceCall(false);
     return;
   }
   const blob = new Blob(recordingChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
@@ -1399,12 +1490,18 @@ async function sendRecordedAudio() {
     speechCandidateSince = 0;
     speechStartedAt = 0;
     lastSpeechAt = 0;
+    if (voiceSessionMode === "input") stopVoiceCall(false);
     return;
   }
   setActiveVoiceState("thinking");
   const audio = await blobToBase64(blob);
   const history = currentMessages.value.map((msg) => ({ role: msg.isUser ? "user" : "assistant", content: msg.content }));
-  voiceSocket.send(JSON.stringify({ type: "audio", audio, filename: "utterance.webm", history, play_audio: voiceSessionPlayAudio }));
+  const socket = voiceSocket;
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    if (voiceSessionMode === "input") stopVoiceCall(false);
+    return;
+  }
+  socket.send(JSON.stringify({ type: "audio", audio, filename: "utterance.webm", history, play_audio: voiceSessionPlayAudio }));
   recordingChunks = [];
   speechStartSent = false;
 
@@ -1440,23 +1537,32 @@ function stopPlayback(clearQueue: boolean) {
 }
 
 function handleVoiceEvent(event: any) {
-  if (event.type === "state") setActiveVoiceState(event.state);
+  const eventTurnId = typeof event.turn_id === "number" ? event.turn_id : null;
+  const isStaleTurn = eventTurnId !== null && activeVoiceTurnId !== null && eventTurnId !== activeVoiceTurnId;
+
+  if (event.type === "state" && !isStaleTurn) setActiveVoiceState(event.state);
   if (event.type === "prewarmed") setActiveVoiceState("listening");
-  if (event.type === "interrupted") setActiveVoiceState("interrupted");
+  if (event.type === "interrupted" && !isStaleTurn) setActiveVoiceState("interrupted");
   if (event.type === "asr_ignored") {
+    if (isStaleTurn) return;
     setActiveVoiceState(isVoiceSessionActive() ? "listening" : "idle");
     currentBotVoiceMessage = null;
+    if (voiceSessionMode === "input" && !voiceInputPressMode) stopVoiceCall(false);
     return;
   }
   if (event.type === "intent_preview" && event.text) {
+    if (isStaleTurn) return;
     setActiveVoiceState("thinking");
   }
   if (event.type === "asr_final" && currentChat.value && event.text) {
+    if (isStaleTurn) return;
+    activeVoiceTurnId = eventTurnId;
     currentChat.value.messages.push({ content: event.text, isUser: true, timestamp: getTimeString() });
     currentChat.value.lastMessage = event.text.slice(0, 30);
     currentBotVoiceMessage = null;
   }
   if (event.type === "llm_chunk" && currentChat.value) {
+    if (isStaleTurn) return;
     if (!currentBotVoiceMessage) {
       currentBotVoiceMessage = { content: "", isUser: false, timestamp: getTimeString(), agent: "voice_agent", agentName: "语音Agent" };
       currentChat.value.messages.push(currentBotVoiceMessage);
@@ -1466,6 +1572,7 @@ function handleVoiceEvent(event: any) {
     nextTick(() => scrollToBottom());
   }
   if (event.type === "tts_chunk") {
+    if (isStaleTurn) return;
     if (!voiceSessionPlayAudio) {
       return;
     }
@@ -1477,8 +1584,11 @@ function handleVoiceEvent(event: any) {
     playNextAudio();
   }
   if (event.type === "done") {
+    if (isStaleTurn) return;
     setActiveVoiceState(isVoiceSessionActive() ? "listening" : "idle");
     currentBotVoiceMessage = null;
+    if (activeVoiceTurnId === eventTurnId) activeVoiceTurnId = null;
+    if (voiceSessionMode === "input" && !voiceInputPressMode) stopVoiceCall(false);
   }
   if (event.type === "error" && currentChat.value) {
     currentChat.value.messages.push({ content: event.detail || "语音服务出错", isUser: false, timestamp: getTimeString() });
@@ -2896,6 +3006,8 @@ textarea {
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
+  touch-action: none;
+  user-select: none;
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 

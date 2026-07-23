@@ -320,6 +320,8 @@ class VoiceAgent:
             yield await tts_tasks.pop(0)
 
         turn.state = "listening"
+        if not play_audio:
+            self.turns.pop(session_id, None)
         yield {
             "type": "done",
             "turn_id": turn.id,
