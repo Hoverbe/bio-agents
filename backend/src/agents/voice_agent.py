@@ -263,6 +263,7 @@ class VoiceAgent:
         audio_b64: str,
         history: Optional[List[Dict[str, str]]] = None,
         filename: str = "utterance.webm",
+        play_audio: bool = True,
     ) -> AsyncIterator[Dict[str, Any]]:
         self.prewarm(session_id, history)
         turn = self.start_turn(session_id)
@@ -288,7 +289,8 @@ class VoiceAgent:
         if self.likely_slow_tool(transcript):
             transition = "我先查一下，马上回复。"
             yield {"type": "llm_chunk", "text": transition, "turn_id": turn.id, "transitional": True}
-            tts_tasks.append(asyncio.create_task(self.tts_event(transition, turn.id)))
+            if play_audio:
+                tts_tasks.append(asyncio.create_task(self.tts_event(transition, turn.id)))
 
         yield {"type": "state", "state": "thinking", "turn_id": turn.id}
         text_buffer = ""
@@ -299,15 +301,16 @@ class VoiceAgent:
             text_buffer += chunk
             sentences, text_buffer = self.split_speakable(text_buffer)
             for sentence in sentences:
-                turn.state = "speaking"
-                yield {"type": "state", "state": "speaking", "turn_id": turn.id}
-                tts_tasks.append(asyncio.create_task(self.tts_event(sentence, turn.id)))
+                if play_audio:
+                    turn.state = "speaking"
+                    yield {"type": "state", "state": "speaking", "turn_id": turn.id}
+                    tts_tasks.append(asyncio.create_task(self.tts_event(sentence, turn.id)))
             async for event in self.drain_ready_tts(tts_tasks):
                 if turn.cancelled:
                     return
                 yield event
 
-        if text_buffer.strip() and not turn.cancelled:
+        if text_buffer.strip() and not turn.cancelled and play_audio:
             sentence = text_buffer.strip()
             turn.state = "speaking"
             yield {"type": "state", "state": "speaking", "turn_id": turn.id}

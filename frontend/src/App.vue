@@ -249,7 +249,7 @@
             <h2>{{ currentChatTitle }}</h2>
           </div>
           <div class="chat-controls">
-            <button class="voice-btn" :class="voiceState" @click="toggleVoiceCall">
+            <button class="voice-btn" :class="voiceState" @click="toggleVoiceCall()">
               <span class="voice-dot"></span>
               {{ voiceEnabled ? voiceStatus : '语音通话' }}
             </button>
@@ -366,6 +366,19 @@
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8.5 10h.01M15.5 10h.01M8 14c1.1 1.3 2.4 2 4 2s2.9-.7 4-2" />
             </svg>
+          </button>
+          <button
+            :class="['voice-input-btn', voiceInputState, { active: voiceInputEnabled }]"
+            type="button"
+            :aria-label="voiceInputEnabled ? '停止语音输入' : '开始语音输入'"
+            :title="voiceInputEnabled ? '停止语音输入' : '开始语音输入'"
+            :disabled="loading || attachmentStatus === 'uploading'"
+            @click="toggleVoiceInput"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 10v1a7 7 0 0 0 14 0v-1M12 18v3M8 21h8" />
+            </svg>
+            <span>{{ voiceInputEnabled ? voiceInputStatus : '语音输入' }}</span>
           </button>
           <button
             :class="['send-btn', { interrupting: loading }]"
@@ -532,8 +545,11 @@ const taskList = ref<TaskItem[]>([]);
 const downloadFiles = ref<DownloadFile[]>([]);
 
 type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "interrupted";
+type VoiceMode = "call" | "input";
 const voiceState = ref<VoiceState>("idle");
 const voiceEnabled = ref(false);
+const voiceInputState = ref<VoiceState>("idle");
+const voiceInputEnabled = ref(false);
 const voiceStatus = computed(() => {
   const map: Record<VoiceState, string> = {
     idle: "语音通话",
@@ -543,6 +559,16 @@ const voiceStatus = computed(() => {
     interrupted: "已打断"
   };
   return map[voiceState.value];
+});
+const voiceInputStatus = computed(() => {
+  const map: Record<VoiceState, string> = {
+    idle: "语音输入",
+    listening: "正在聆听",
+    thinking: "正在理解",
+    speaking: "正在播报",
+    interrupted: "已打断"
+  };
+  return map[voiceInputState.value];
 });
 let voiceSocket: WebSocket | null = null;
 let mediaRecorder: MediaRecorder | null = null;
@@ -561,6 +587,8 @@ let currentPlayedText = "";
 let audioPlaybackUnlocked = false;
 let speechStartSent = false;
 let closingVoiceCall = false;
+let voiceSessionMode: VoiceMode | null = null;
+let voiceSessionPlayAudio = true;
 let speechCandidateSince = 0;
 let attachmentDragDepth = 0;
 
@@ -610,7 +638,10 @@ const currentChatTitle = computed(() => {
   return currentChat.value.title;
 });
 
-const chatInputPlaceholder = computed(() => isMobileViewport.value ? "Write a letter..." : "输入您的问题...");
+const chatInputPlaceholder = computed(() => {
+  if (voiceInputEnabled.value) return "正在语音输入...";
+  return isMobileViewport.value ? "Write a letter..." : "输入您的问题...";
+});
 
 const mobileVoiceStatus = computed(() => {
   const map: Record<VoiceState, string> = {
@@ -633,6 +664,37 @@ const mobileTranscript = computed(() => {
   const lastAssistant = [...currentMessages.value].reverse().find((message) => !message.isUser);
   return currentBotVoiceMessage?.content || lastAssistant?.content || "等待你开始说话";
 });
+
+function getVoiceModeLabel(mode: VoiceMode | null): string {
+  return mode === "input" ? "语音输入" : "语音通话";
+}
+
+function setActiveVoiceState(state: VoiceState) {
+  if (voiceSessionMode === "input") {
+    voiceInputState.value = state;
+    return;
+  }
+  if (voiceSessionMode === "call") {
+    voiceState.value = state;
+  }
+}
+
+function getActiveVoiceState(): VoiceState {
+  if (voiceSessionMode === "input") return voiceInputState.value;
+  if (voiceSessionMode === "call") return voiceState.value;
+  return "idle";
+}
+
+function isVoiceSessionActive(): boolean {
+  return voiceEnabled.value || voiceInputEnabled.value;
+}
+
+function setVoiceSessionFlags(mode: VoiceMode | null, enabled: boolean) {
+  voiceEnabled.value = mode === "call" && enabled;
+  voiceInputEnabled.value = mode === "input" && enabled;
+  if (!enabled || mode !== "call") voiceState.value = "idle";
+  if (!enabled || mode !== "input") voiceInputState.value = "idle";
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -948,6 +1010,7 @@ async function handleLogin() {
 
 // 退出登录
 function handleLogout() {
+  if (isVoiceSessionActive()) stopVoiceCall(false);
   saveChatHistory();
   clearUsernameCookie();
 
@@ -964,6 +1027,7 @@ function handleLogout() {
 
 // 开始新对话
 function startNewChat() {
+  if (isVoiceSessionActive()) stopVoiceCall(false);
   currentView.value = "chat";
   const newChat: Chat = {
     title: "新对话",
@@ -988,6 +1052,7 @@ function startNewChat() {
 
 // 切换对话
 function switchChat(index: number) {
+  if (isVoiceSessionActive()) stopVoiceCall(false);
   currentView.value = "chat";
   currentChatIndex.value = index;
   inputMessage.value = "";
@@ -1006,6 +1071,7 @@ function switchChat(index: number) {
 async function deleteChat(index: number) {
   const chat = chatHistory.value[index];
   if (!chat) return;
+  if (currentChatIndex.value === index && isVoiceSessionActive()) stopVoiceCall(false);
 
   if (chat.id) {
     try {
@@ -1041,6 +1107,7 @@ async function deleteChat(index: number) {
 // 清空当前对话
 function clearCurrentChat() {
   if (currentChat.value) {
+    if (isVoiceSessionActive()) stopVoiceCall(false);
     currentChat.value.messages = [];
     currentChat.value.lastMessage = "";
     currentChat.value.downloadSessionId = undefined;
@@ -1100,10 +1167,13 @@ function closeMobileCall() {
   }
 }
 
-async function toggleVoiceCall() {
-  if (voiceEnabled.value) {
+async function toggleVoiceCall(mode: VoiceMode = "call") {
+  if ((mode === "call" && voiceEnabled.value) || (mode === "input" && voiceInputEnabled.value)) {
     stopVoiceCall();
     return;
+  }
+  if (isVoiceSessionActive()) {
+    stopVoiceCall(false);
   }
   if (!currentChat.value) return;
 
@@ -1122,7 +1192,9 @@ async function toggleVoiceCall() {
     return;
   }
 
-  await unlockAudioPlayback();
+  if (mode === "call") {
+    await unlockAudioPlayback();
+  }
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   } catch (error) {
@@ -1141,14 +1213,23 @@ async function toggleVoiceCall() {
 
   const sessionId = `${username.value}-${Date.now()}`;
   closingVoiceCall = false;
+  voiceSessionMode = mode;
+  voiceSessionPlayAudio = mode === "call";
+  setVoiceSessionFlags(mode, true);
   voiceSocket = new WebSocket(getVoiceWsUrl(sessionId));
   voiceSocket.onopen = () => showVoiceNotice("语音连接已建立，请开始说话。");
+  if (mode === "input") {
+    voiceSocket.onopen = () => showVoiceNotice(`${getVoiceModeLabel(mode)}已启动，请开始说话。`);
+  }
   voiceSocket.onmessage = (message) => handleVoiceEvent(JSON.parse(message.data));
   voiceSocket.onerror = () => handleVoiceSocketClosed();
   voiceSocket.onclose = () => handleVoiceSocketClosed();
-  voiceEnabled.value = true;
-  voiceState.value = "listening";
+  setActiveVoiceState("listening");
   startVadLoop();
+}
+
+async function toggleVoiceInput() {
+  await toggleVoiceCall("input");
 }
 
 function showVoiceNotice(message: string) {
@@ -1189,8 +1270,7 @@ function getAudioSource(audio: string, format: string): string {
 
 function stopVoiceCall(sendInterrupt = true) {
   closingVoiceCall = true;
-  voiceEnabled.value = false;
-  voiceState.value = "idle";
+  setVoiceSessionFlags(null, false);
   window.clearInterval(vadTimer);
   stopRecording(false);
   stopPlayback(true);
@@ -1204,12 +1284,15 @@ function stopVoiceCall(sendInterrupt = true) {
   }
   voiceSocket?.close();
   voiceSocket = null;
+  voiceSessionMode = null;
+  voiceSessionPlayAudio = true;
   speechStartSent = false;
 }
 
 function handleVoiceSocketClosed() {
   if (closingVoiceCall) return;
-  voiceState.value = "interrupted";
+  const closedVoiceMode = voiceSessionMode;
+  setActiveVoiceState("interrupted");
   window.clearInterval(vadTimer);
   stopRecording(false);
   stopPlayback(true);
@@ -1219,17 +1302,19 @@ function handleVoiceSocketClosed() {
   audioContext = null;
   analyser = null;
   voiceSocket = null;
-  voiceEnabled.value = false;
+  setVoiceSessionFlags(null, false);
+  voiceSessionMode = null;
+  voiceSessionPlayAudio = true;
   speechStartSent = false;
   if (currentChat.value) {
-    currentChat.value.messages.push({ content: "语音连接已断开，请重新点击语音通话。", isUser: false, timestamp: getTimeString() });
+    currentChat.value.messages.push({ content: `${getVoiceModeLabel(closedVoiceMode)}连接已断开，请重新点击${getVoiceModeLabel(closedVoiceMode)}。`, isUser: false, timestamp: getTimeString() });
   }
 }
 
 function startVadLoop() {
   const data = new Uint8Array(analyser?.frequencyBinCount || 0);
   vadTimer = window.setInterval(() => {
-    if (!voiceEnabled.value || !analyser) return;
+    if (!isVoiceSessionActive() || !analyser) return;
     analyser.getByteTimeDomainData(data);
     const rms = Math.sqrt(data.reduce((sum, value) => {
       const normalized = (value - 128) / 128;
@@ -1250,7 +1335,7 @@ function startVadLoop() {
     }
 
     const stableSpeaking = speaking && now - speechCandidateSince >= vadStartDelay;
-    if (stableSpeaking && (voiceState.value === "speaking" || voiceState.value === "thinking")) {
+    if (stableSpeaking && (getActiveVoiceState() === "speaking" || getActiveVoiceState() === "thinking")) {
       interruptVoiceTurn();
     }
     if (stableSpeaking && !speechStartSent && sendSpeechStart()) {
@@ -1265,7 +1350,7 @@ function startVadLoop() {
 function sendSpeechStart(): boolean {
   if (voiceSocket?.readyState !== WebSocket.OPEN) return false;
   const history = currentMessages.value.map((msg) => ({ role: msg.isUser ? "user" : "assistant", content: msg.content }));
-  voiceSocket.send(JSON.stringify({ type: "speech_start", history }));
+  voiceSocket.send(JSON.stringify({ type: "speech_start", history, play_audio: voiceSessionPlayAudio }));
   return true;
 }
 
@@ -1284,7 +1369,7 @@ function startRecording() {
   };
   mediaRecorder.onstop = () => sendRecordedAudio();
   mediaRecorder.start(120);
-  voiceState.value = "listening";
+  setActiveVoiceState("listening");
 }
 
 function stopRecording(send: boolean) {
@@ -1316,10 +1401,10 @@ async function sendRecordedAudio() {
     lastSpeechAt = 0;
     return;
   }
-  voiceState.value = "thinking";
+  setActiveVoiceState("thinking");
   const audio = await blobToBase64(blob);
   const history = currentMessages.value.map((msg) => ({ role: msg.isUser ? "user" : "assistant", content: msg.content }));
-  voiceSocket.send(JSON.stringify({ type: "audio", audio, filename: "utterance.webm", history }));
+  voiceSocket.send(JSON.stringify({ type: "audio", audio, filename: "utterance.webm", history, play_audio: voiceSessionPlayAudio }));
   recordingChunks = [];
   speechStartSent = false;
 
@@ -1340,7 +1425,7 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 function interruptVoiceTurn() {
-  voiceState.value = "interrupted";
+  setActiveVoiceState("interrupted");
   stopPlayback(true);
   if (voiceSocket?.readyState === WebSocket.OPEN) {
     voiceSocket.send(JSON.stringify({ type: "interrupt" }));
@@ -1355,16 +1440,16 @@ function stopPlayback(clearQueue: boolean) {
 }
 
 function handleVoiceEvent(event: any) {
-  if (event.type === "state") voiceState.value = event.state;
-  if (event.type === "prewarmed") voiceState.value = "listening";
-  if (event.type === "interrupted") voiceState.value = "interrupted";
+  if (event.type === "state") setActiveVoiceState(event.state);
+  if (event.type === "prewarmed") setActiveVoiceState("listening");
+  if (event.type === "interrupted") setActiveVoiceState("interrupted");
   if (event.type === "asr_ignored") {
-    voiceState.value = voiceEnabled.value ? "listening" : "idle";
+    setActiveVoiceState(isVoiceSessionActive() ? "listening" : "idle");
     currentBotVoiceMessage = null;
     return;
   }
   if (event.type === "intent_preview" && event.text) {
-    voiceState.value = "thinking";
+    setActiveVoiceState("thinking");
   }
   if (event.type === "asr_final" && currentChat.value && event.text) {
     currentChat.value.messages.push({ content: event.text, isUser: true, timestamp: getTimeString() });
@@ -1381,6 +1466,9 @@ function handleVoiceEvent(event: any) {
     nextTick(() => scrollToBottom());
   }
   if (event.type === "tts_chunk") {
+    if (!voiceSessionPlayAudio) {
+      return;
+    }
     if (!event.audio && currentChat.value) {
       currentChat.value.messages.push({ content: "收到 TTS 事件，但音频数据为空。", isUser: false, timestamp: getTimeString() });
       return;
@@ -1389,7 +1477,7 @@ function handleVoiceEvent(event: any) {
     playNextAudio();
   }
   if (event.type === "done") {
-    voiceState.value = voiceEnabled.value ? "listening" : "idle";
+    setActiveVoiceState(isVoiceSessionActive() ? "listening" : "idle");
     currentBotVoiceMessage = null;
   }
   if (event.type === "error" && currentChat.value) {
@@ -1398,6 +1486,10 @@ function handleVoiceEvent(event: any) {
 }
 
 function playNextAudio() {
+  if (!voiceSessionPlayAudio) {
+    audioQueue.splice(0);
+    return;
+  }
   if (playing || audioQueue.length === 0) return;
   const item = audioQueue.shift()!;
   if (!item.audio) {
@@ -1405,7 +1497,7 @@ function playNextAudio() {
     return;
   }
   playing = true;
-  voiceState.value = "speaking";
+  setActiveVoiceState("speaking");
   currentPlayedText = item.text;
   const audioUrl = getAudioSource(item.audio, item.format);
   currentAudio = new Audio(audioUrl);
@@ -1416,7 +1508,7 @@ function playNextAudio() {
     playing = false;
     currentAudio = null;
     playNextAudio();
-    if (!playing && audioQueue.length === 0 && voiceEnabled.value) voiceState.value = "listening";
+    if (!playing && audioQueue.length === 0 && isVoiceSessionActive()) setActiveVoiceState("listening");
   };
   currentAudio.onerror = () => {
     playing = false;
@@ -2788,6 +2880,64 @@ textarea {
   opacity: 0.5;
 }
 
+.voice-input-btn {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  color: #2563eb;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.voice-input-btn.active,
+.voice-input-btn.listening {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.36);
+  color: #047857;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.08);
+}
+
+.voice-input-btn.thinking {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.36);
+  color: #b45309;
+}
+
+.voice-input-btn.interrupted {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.32);
+  color: #dc2626;
+}
+
+.voice-input-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.voice-input-btn svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.voice-input-btn svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .emoji-picker {
   position: absolute;
   right: 0;
@@ -3764,6 +3914,20 @@ textarea {
     display: grid;
     place-items: center;
     flex: 0 0 auto;
+  }
+
+  .voice-input-btn {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-radius: 50%;
+    gap: 0;
+  }
+
+  .voice-input-btn span {
+    display: none;
   }
 
   .emoji-picker {

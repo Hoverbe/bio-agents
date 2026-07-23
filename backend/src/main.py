@@ -947,6 +947,7 @@ def create_app() -> FastAPI:
                         audio_b64=payload.get("audio", ""),
                         history=payload.get("history") or [],
                         filename=payload.get("filename", "utterance.webm"),
+                        play_audio=payload.get("play_audio", True),
                     ):
                         await websocket.send_json(event)
                 except Exception as exc:
